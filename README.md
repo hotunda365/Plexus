@@ -128,3 +128,22 @@ Example body for `POST /settings/cloud-accounts`:
 - Personal WhatsApp login requires scanning QR in terminal on first run.
 - Using personal WhatsApp automation may violate WhatsApp Terms for some use cases. For production, prefer official WhatsApp Business Cloud API.
 - For production DB, switch Prisma datasource to PostgreSQL/MySQL and update `DATABASE_URL`.
+
+## Zeabur Deploy
+
+Recommended runtime settings on Zeabur:
+
+- Start command: `npm start`
+- Node version: `20+`
+
+Required environment variables:
+
+- `PORT` provided by Zeabur automatically
+- `BASE_URL` set to your Zeabur service URL
+- `DATABASE_URL` set to your Zeabur PostgreSQL connection string
+- `CONNECTOR_MODE=cloud | personal | both`
+
+Notes for Zeabur:
+
+- `npm start` will run `prisma db push` automatically before starting the server.
+- Personal WhatsApp via `whatsapp-web.js` may be unstable on serverless/container platforms because it depends on Chromium session persistence. For stable production deployment, prefer the Cloud API connector.
