@@ -1,0 +1,79 @@
+apiVersion: zeabur.com/v1
+kind: Template
+metadata:
+  name: WhatsApp Bridge Server
+spec:
+  description: Multi-account WhatsApp bridge server with dashboard, PostgreSQL persistence, Cloud API and personal WhatsApp support.
+  icon: https://raw.githubusercontent.com/zeabur/service-icons/main/marketplace/nodejs.svg
+  tags:
+    - Productivity
+    - Bot
+    - Tool
+  readme: |-
+    # WhatsApp Bridge Server
+
+    Deploy an Express-based WhatsApp bridge with PostgreSQL persistence and a web dashboard.
+
+    ## Required variables
+
+    - `BASE_URL`: public URL of this service
+    - `DATABASE_URL`: PostgreSQL connection string
+    - `CONNECTOR_MODE`: `cloud`, `personal`, or `both`
+
+    ## Notes
+
+    - `npm start` runs `prisma db push` before starting the server.
+    - Cloud API is the recommended production connector.
+    - Personal WhatsApp requires persistent session storage and may be less stable in container deployments.
+  variables:
+    - key: PUBLIC_DOMAIN
+      type: DOMAIN
+      name: Public Domain
+      description: Public domain for the dashboard and webhook base URL.
+    - key: DATABASE_URL
+      type: STRING
+      name: PostgreSQL Connection String
+      description: PostgreSQL database URL used by Prisma.
+    - key: CONNECTOR_MODE
+      type: STRING
+      name: Connector Mode
+      description: Set to cloud, personal, or both.
+  services:
+    - name: whatsapp-bridge
+      icon: https://raw.githubusercontent.com/zeabur/service-icons/main/marketplace/nodejs.svg
+      template: PREBUILT
+      domainKey: PUBLIC_DOMAIN
+      spec:
+        source:
+          image: node:20-bookworm-slim
+        ports:
+          - id: web
+            port: 3000
+            type: HTTP
+        volumes:
+          - id: auth
+            dir: /app/.wwebjs_auth
+        configs:
+          - path: /app/bootstrap.sh
+            permission: 493
+            template: |-
+              #!/bin/sh
+              set -eu
+              cd /app
+              npm install
+              npx prisma generate
+              npx prisma db push --skip-generate
+              exec npm start
+        command:
+          - /bin/sh
+        args:
+          - /app/bootstrap.sh
+        env:
+          PORT:
+            default: "3000"
+          BASE_URL:
+            default: https://${PUBLIC_DOMAIN}
+          DATABASE_URL:
+            default: ${DATABASE_URL}
+          CONNECTOR_MODE:
+            default: ${CONNECTOR_MODE}
