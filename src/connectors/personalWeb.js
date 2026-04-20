@@ -4,6 +4,74 @@ const QRCode = require("qrcode");
 const { Client, LocalAuth } = require("whatsapp-web.js");
 const { prisma } = require("../db");
 
+function toDateTime(ts) {
+  return ts ? new Date(ts * 1000) : null;
+}
+
+function parsePersonalMessage(msg) {
+  const fromId = msg.from || null;
+  const toId = msg.to || null;
+  const chatId = msg.fromMe ? toId : fromId;
+  const groupId = chatId && chatId.endsWith("@g.us") ? chatId : null;
+  const vCards = Array.isArray(msg.vCards) ? msg.vCards : [];
+  const mediaMimeType = msg._data?.mimetype || null;
+
+  return {
+    externalMessageId: msg.id?._serialized || null,
+    chatId,
+    fromNumber: fromId,
+    toNumber: toId,
+    senderName: msg.notifyName || msg._data?.notifyName || msg._data?.pushname || null,
+    text: msg.body || null,
+    messageType: msg.type || "unknown",
+    isGroup: Boolean(groupId),
+    groupId,
+    groupName: null,
+    mediaType: msg.hasMedia ? (msg.type || "media") : null,
+    mediaMimeType,
+    mediaId: msg.id?._serialized || null,
+    mediaSha256: msg._data?.filehash || null,
+    mediaCaption: msg.body || null,
+    contactName: vCards[0]?.fn || null,
+    contactPhone: null,
+    contacts: vCards.length > 0 ? vCards : null,
+    payload: {
+      id: msg.id?._serialized || null,
+      from: msg.from,
+      to: msg.to,
+      author: msg.author || null,
+      body: msg.body,
+      type: msg.type,
+      timestamp: msg.timestamp,
+      fromMe: msg.fromMe,
+      hasMedia: msg.hasMedia,
+      notifyName: msg.notifyName || null,
+      data: msg._data || null,
+      vCards
+    },
+    sentAt: toDateTime(msg.timestamp)
+  };
+}
+
+async function upsertPersonalAccountInfo({ accountId, phoneNumber = null, displayName = null, metadata = null }) {
+  await prisma.accountInfo.upsert({
+    where: { accountId },
+    update: {
+      connector: "personal",
+      displayName: displayName || null,
+      phoneNumber: phoneNumber || null,
+      metadata: metadata || null
+    },
+    create: {
+      accountId,
+      connector: "personal",
+      displayName: displayName || null,
+      phoneNumber: phoneNumber || null,
+      metadata: metadata || null
+    }
+  });
+}
+
 function createPersonalConnector(config) {
   const accountId = config.accountId;
   const sessionDir = config.sessionDir || ".wwebjs_auth";
@@ -38,6 +106,18 @@ function createPersonalConnector(config) {
     initialized = true;
     latestQr = null;
     latestQrCreatedAt = null;
+
+    const selfPhone = client.info?.wid?.user || null;
+    await upsertPersonalAccountInfo({
+      accountId,
+      phoneNumber: selfPhone,
+      displayName: client.info?.pushname || null,
+      metadata: {
+        sessionDir,
+        wid: client.info?.wid || null
+      }
+    });
+
     await prisma.eventLog.create({
       data: {
         accountId,
@@ -50,25 +130,34 @@ function createPersonalConnector(config) {
   });
 
   client.on("message", async (msg) => {
+    const details = parsePersonalMessage(msg);
+
     await prisma.message.create({
       data: {
         accountId,
         platform: "whatsapp_personal",
         direction: "inbound",
-        externalMessageId: msg.id?._serialized || null,
-        chatId: msg.from,
-        fromNumber: msg.from,
-        toNumber: msg.to || null,
-        text: msg.body || null,
-        messageType: msg.type || "unknown",
-        payload: {
-          from: msg.from,
-          to: msg.to,
-          body: msg.body,
-          type: msg.type,
-          timestamp: msg.timestamp
-        },
-        sentAt: msg.timestamp ? new Date(msg.timestamp * 1000) : null
+        externalMessageId: details.externalMessageId,
+        chatId: details.chatId,
+        fromNumber: details.fromNumber,
+        toNumber: details.toNumber,
+        senderName: details.senderName,
+        accountPhone: client.info?.wid?.user || null,
+        text: details.text,
+        messageType: details.messageType,
+        isGroup: details.isGroup,
+        groupId: details.groupId,
+        groupName: details.groupName,
+        mediaType: details.mediaType,
+        mediaMimeType: details.mediaMimeType,
+        mediaId: details.mediaId,
+        mediaSha256: details.mediaSha256,
+        mediaCaption: details.mediaCaption,
+        contactName: details.contactName,
+        contactPhone: details.contactPhone,
+        contacts: details.contacts,
+        payload: details.payload,
+        sentAt: details.sentAt
       }
     });
   });
@@ -78,25 +167,34 @@ function createPersonalConnector(config) {
       return;
     }
 
+    const details = parsePersonalMessage(msg);
+
     await prisma.message.create({
       data: {
         accountId,
         platform: "whatsapp_personal",
         direction: "outbound",
-        externalMessageId: msg.id?._serialized || null,
-        chatId: msg.to,
-        fromNumber: msg.from || null,
-        toNumber: msg.to || null,
-        text: msg.body || null,
-        messageType: msg.type || "unknown",
-        payload: {
-          from: msg.from,
-          to: msg.to,
-          body: msg.body,
-          type: msg.type,
-          timestamp: msg.timestamp
-        },
-        sentAt: msg.timestamp ? new Date(msg.timestamp * 1000) : null
+        externalMessageId: details.externalMessageId,
+        chatId: details.chatId,
+        fromNumber: details.fromNumber,
+        toNumber: details.toNumber,
+        senderName: details.senderName,
+        accountPhone: client.info?.wid?.user || null,
+        text: details.text,
+        messageType: details.messageType,
+        isGroup: details.isGroup,
+        groupId: details.groupId,
+        groupName: details.groupName,
+        mediaType: details.mediaType,
+        mediaMimeType: details.mediaMimeType,
+        mediaId: details.mediaId,
+        mediaSha256: details.mediaSha256,
+        mediaCaption: details.mediaCaption,
+        contactName: details.contactName,
+        contactPhone: details.contactPhone,
+        contacts: details.contacts,
+        payload: details.payload,
+        sentAt: details.sentAt
       }
     });
   });

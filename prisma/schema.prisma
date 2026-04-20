@@ -28,8 +28,22 @@ model Message {
   chatId            String?
   fromNumber        String?
   toNumber          String?
+  senderName        String?
+  accountPhone      String?
+  accountPhoneId    String?
   text              String?
   messageType       String
+  isGroup           Boolean  @default(false)
+  groupId           String?
+  groupName         String?
+  mediaType         String?
+  mediaMimeType     String?
+  mediaId           String?
+  mediaSha256       String?
+  mediaCaption      String?
+  contactName       String?
+  contactPhone      String?
+  contacts          Json?
   payload           Json
   sentAt            DateTime?
   createdAt         DateTime @default(now())
@@ -44,4 +58,16 @@ model CloudAccountConfig {
   verifyToken   String
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
+}
+
+model AccountInfo {
+  id           String   @id @default(cuid())
+  accountId    String   @unique
+  connector    String
+  displayName  String?
+  phoneNumber  String?
+  phoneNumberId String?
+  metadata     Json?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 }

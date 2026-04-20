@@ -147,6 +147,27 @@ function getPersonalConnector(accountId) {
   return firstConnector(personalConnectors);
 }
 
+async function upsertAccountInfo({ accountId, connector, displayName = null, phoneNumber = null, phoneNumberId = null, metadata = null }) {
+  await prisma.accountInfo.upsert({
+    where: { accountId },
+    update: {
+      connector,
+      displayName: displayName || null,
+      phoneNumber: phoneNumber || null,
+      phoneNumberId: phoneNumberId || null,
+      metadata: metadata || null
+    },
+    create: {
+      accountId,
+      connector,
+      displayName: displayName || null,
+      phoneNumber: phoneNumber || null,
+      phoneNumberId: phoneNumberId || null,
+      metadata: metadata || null
+    }
+  });
+}
+
 app.get("/health", async (_req, res) => {
   const totalMessages = await prisma.message.count();
   res.json({
@@ -164,11 +185,17 @@ app.get("/health", async (_req, res) => {
   });
 });
 
-app.get("/accounts", (_req, res) => {
+app.get("/accounts", async (_req, res) => {
+  const infoRows = await prisma.accountInfo.findMany();
+  const infoMap = new Map(infoRows.map((row) => [row.accountId, row]));
+
   const cloud = [...cloudConnectors.values()].map((item) => ({
     accountId: item.accountId,
     connector: "cloud",
-    ready: item.isReady()
+    ready: item.isReady(),
+    phoneNumber: infoMap.get(item.accountId)?.phoneNumber || null,
+    phoneNumberId: infoMap.get(item.accountId)?.phoneNumberId || null,
+    displayName: infoMap.get(item.accountId)?.displayName || null
   }));
 
   const personal = [...personalConnectors.values()].map((item) => {
@@ -178,7 +205,10 @@ app.get("/accounts", (_req, res) => {
       connector: "personal",
       ready: item.isReady(),
       hasQr: qr.hasQr,
-      qrCreatedAt: qr.qrCreatedAt
+      qrCreatedAt: qr.qrCreatedAt,
+      phoneNumber: infoMap.get(item.accountId)?.phoneNumber || null,
+      phoneNumberId: infoMap.get(item.accountId)?.phoneNumberId || null,
+      displayName: infoMap.get(item.accountId)?.displayName || null
     };
   });
 
@@ -204,6 +234,7 @@ app.delete("/accounts/:accountId", async (req, res) => {
   if (cloudConnector) {
     cloudConnectors.delete(accountId);
     await prisma.cloudAccountConfig.deleteMany({ where: { accountId } });
+    await prisma.accountInfo.deleteMany({ where: { accountId } });
     return res.json({ ok: true, accountId, connector: "cloud", deleted: true });
   }
 
@@ -214,6 +245,7 @@ app.delete("/accounts/:accountId", async (req, res) => {
     } finally {
       personalConnectors.delete(accountId);
     }
+    await prisma.accountInfo.deleteMany({ where: { accountId } });
     return res.json({ ok: true, accountId, connector: "personal", deleted: true });
   }
 
@@ -276,6 +308,14 @@ app.post("/settings/cloud-accounts", async (req, res) => {
     phoneNumberId,
     accessToken,
     verifyToken
+  });
+
+  await upsertAccountInfo({
+    accountId,
+    connector: "cloud",
+    displayName: displayName || null,
+    phoneNumberId,
+    metadata: { source: "settings-cloud-accounts" }
   });
 
   return res.status(201).json({
@@ -380,6 +420,13 @@ async function bootstrap() {
   for (const account of savedCloudAccounts) {
     try {
       registerCloudConnector(account);
+      await upsertAccountInfo({
+        accountId: account.accountId,
+        connector: "cloud",
+        displayName: account.displayName || null,
+        phoneNumberId: account.phoneNumberId,
+        metadata: { source: "bootstrap-cloud-config" }
+      });
     } catch (error) {
       console.error(`Failed to restore cloud connector ${account.accountId}`, error);
     }
