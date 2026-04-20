@@ -1,0 +1,29 @@
+{
+  "name": "wa-bridge-server",
+  "version": "1.0.0",
+  "description": "WhatsApp Business Cloud API + Personal WhatsApp bridge server with DB persistence",
+  "main": "src/server.js",
+  "scripts": {
+    "dev": "node --watch src/server.js",
+    "start": "node src/server.js",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev --name init",
+    "db:push": "prisma db push"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.6.0",
+    "@prisma/fetch-engine": "^6.6.0",
+    "axios": "^1.8.4",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "qrcode": "^1.5.4",
+    "qrcode-terminal": "^0.12.0",
+    "whatsapp-web.js": "^1.26.0"
+  },
+  "devDependencies": {
+    "prisma": "^6.6.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

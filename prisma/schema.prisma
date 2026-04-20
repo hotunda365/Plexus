@@ -1,0 +1,47 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model EventLog {
+  id         String   @id @default(cuid())
+  accountId  String?
+  platform   String
+  direction  String
+  eventType  String
+  fromNumber String?
+  toNumber   String?
+  payload    Json
+  createdAt  DateTime @default(now())
+}
+
+model Message {
+  id                String   @id @default(cuid())
+  accountId         String?
+  platform          String
+  direction         String
+  externalMessageId String?
+  chatId            String?
+  fromNumber        String?
+  toNumber          String?
+  text              String?
+  messageType       String
+  payload           Json
+  sentAt            DateTime?
+  createdAt         DateTime @default(now())
+}
+
+model CloudAccountConfig {
+  id            String   @id @default(cuid())
+  accountId     String   @unique
+  displayName   String?
+  phoneNumberId String
+  accessToken   String
+  verifyToken   String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}

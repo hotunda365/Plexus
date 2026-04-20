@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WhatsApp Bridge Dashboard</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="bg-orb orb-a"></div>
+    <div class="bg-orb orb-b"></div>
+
+    <main class="layout">
+      <header class="hero">
+        <h1>WhatsApp 连接管理面板</h1>
+        <p>在一个地方监控多账户状态、消息和事件。</p>
+        <div class="hero-actions">
+          <button id="refreshAllBtn">刷新数据</button>
+          <span id="lastUpdated">未加载</span>
+        </div>
+      </header>
+
+      <section class="card">
+        <h2>服务器状态</h2>
+        <pre id="healthBox">加载中...</pre>
+      </section>
+
+      <section class="card">
+        <h2>账户管理</h2>
+        <div class="account-tabs" id="accountTabsContainer">
+          <button type="button" class="account-tab" data-account-id="setup">+ 添加账户</button>
+        </div>
+        <div class="account-pages" id="accountPagesContainer"></div>
+      </section>
+
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
+
