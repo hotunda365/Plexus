@@ -93,6 +93,16 @@ body {
   animation: reveal 0.5s ease;
 }
 
+.connection-card {
+  margin-top: 20px;
+  border: 1px solid rgba(228, 87, 46, 0.35);
+  box-shadow: 0 14px 34px rgba(228, 87, 46, 0.12);
+}
+
+.status-card {
+  margin-top: 14px;
+}
+
 .card h2 {
   margin-top: 0;
 }
@@ -253,6 +263,10 @@ pre {
   border-bottom: 2px solid var(--line);
 }
 
+.connection-card .account-tabs {
+  margin-bottom: 14px;
+}
+
 .account-tab {
   background: var(--accent-soft);
   color: var(--ink);
@@ -275,6 +289,7 @@ pre {
   background: var(--accent);
   color: white;
   border-color: var(--accent);
+  box-shadow: 0 8px 18px rgba(228, 87, 46, 0.28);
 }
 
 .account-tab.pending {
@@ -303,6 +318,10 @@ pre {
   margin-bottom: 20px;
   padding-bottom: 16px;
   border-bottom: 2px solid var(--line);
+}
+
+.account-details h3 {
+  margin: 0 0 10px;
 }
 
 .account-header h3 {
@@ -448,5 +467,14 @@ th {
 
   .form-grid {
     grid-template-columns: 1fr;
+  }
+
+  .connection-card {
+    margin-top: 16px;
+  }
+
+  .account-header {
+    flex-direction: column;
+    align-items: flex-start;
   }
 }

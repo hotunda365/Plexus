@@ -13,19 +13,14 @@
     <main class="layout">
       <header class="hero">
         <h1>WhatsApp 连接管理面板</h1>
-        <p>在一个地方管理单账户连接状态、消息和事件。</p>
+        <p>先完成连接，再查看状态与消息。连接入口已置顶。</p>
         <div class="hero-actions">
           <button id="refreshAllBtn">刷新数据</button>
           <span id="lastUpdated">未加载</span>
         </div>
       </header>
 
-      <section class="card">
-        <h2>服务器状态</h2>
-        <pre id="healthBox">加载中...</pre>
-      </section>
-
-      <section class="card">
+      <section class="card connection-card">
         <h2>账户管理</h2>
         <div class="account-tabs" id="accountTabsContainer">
           <button type="button" class="account-tab" data-account-id="setup">连接设置</button>
@@ -33,6 +28,9 @@
         <div class="account-pages" id="accountPagesContainer"></div>
       </section>
 
+      <section class="card status-card">
+        <h2>服务器状态</h2>
+        <pre id="healthBox">加载中...</pre>
       </section>
     </main>
 

@@ -67,8 +67,14 @@ async function loadAccounts() {
     pageContainer.appendChild(page);
   }
 
-  if (data.length > 0) {
-    switchAccount(data[0].accountId);
+  const hasCurrent = currentAccount && (
+    currentAccount === "setup" || data.some((row) => row.accountId === currentAccount)
+  );
+
+  if (hasCurrent) {
+    switchAccount(currentAccount);
+  } else {
+    switchAccount("setup");
   }
 
   return data;
@@ -425,7 +431,7 @@ function renderSetupPage() {
     const resultBox = setupPage.querySelector("#setupCloudResult");
 
     try {
-      const data = await fetchJson("/settings/cloud-accounts", {
+      await fetchJson("/settings/cloud-accounts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
