@@ -13,6 +13,8 @@ app.use(express.static(path.resolve(__dirname, "../public")));
 const port = Number(process.env.PORT || 3000);
 const mode = process.env.CONNECTOR_MODE || "both";
 const baseUrl = process.env.BASE_URL || `http://localhost:${port}`;
+const DEFAULT_CLOUD_ACCOUNT_ID = "cloud-default";
+const DEFAULT_PERSONAL_ACCOUNT_ID = "personal-default";
 
 const cloudConnectors = new Map();
 const personalConnectors = new Map();
@@ -33,7 +35,12 @@ function safeParseArrayEnv(value) {
 function loadCloudConfigs() {
   const multi = safeParseArrayEnv(process.env.WA_CLOUD_ACCOUNTS_JSON);
   if (multi.length > 0) {
-    return multi;
+    return [{
+      accountId: DEFAULT_CLOUD_ACCOUNT_ID,
+      phoneNumberId: multi[0].phoneNumberId,
+      accessToken: multi[0].accessToken,
+      verifyToken: multi[0].verifyToken
+    }];
   }
 
   if (
@@ -42,7 +49,7 @@ function loadCloudConfigs() {
     process.env.WA_CLOUD_VERIFY_TOKEN
   ) {
     return [{
-      accountId: "cloud-default",
+      accountId: DEFAULT_CLOUD_ACCOUNT_ID,
       phoneNumberId: process.env.WA_CLOUD_PHONE_NUMBER_ID,
       accessToken: process.env.WA_CLOUD_ACCESS_TOKEN,
       verifyToken: process.env.WA_CLOUD_VERIFY_TOKEN
@@ -55,12 +62,15 @@ function loadCloudConfigs() {
 function loadPersonalConfigs() {
   const multi = safeParseArrayEnv(process.env.WA_PERSONAL_ACCOUNTS_JSON);
   if (multi.length > 0) {
-    return multi;
+    return [{
+      accountId: DEFAULT_PERSONAL_ACCOUNT_ID,
+      sessionDir: multi[0].sessionDir
+    }];
   }
 
   if (process.env.WA_PERSONAL_SESSION_DIR) {
     return [{
-      accountId: "personal-default",
+      accountId: DEFAULT_PERSONAL_ACCOUNT_ID,
       sessionDir: process.env.WA_PERSONAL_SESSION_DIR
     }];
   }
@@ -69,7 +79,7 @@ function loadPersonalConfigs() {
 }
 
 function registerCloudConnector(config) {
-  const accountId = String(config.accountId || "").trim();
+  const accountId = String(config.accountId || DEFAULT_CLOUD_ACCOUNT_ID).trim();
   if (!accountId) {
     throw new Error("cloud accountId is required");
   }
@@ -81,14 +91,23 @@ function registerCloudConnector(config) {
     verifyToken: config.verifyToken
   });
 
+  cloudConnectors.clear();
   cloudConnectors.set(accountId, connector);
   return connector;
 }
 
 function registerPersonalConnector(config) {
-  const accountId = String(config.accountId || "").trim();
+  const accountId = String(config.accountId || DEFAULT_PERSONAL_ACCOUNT_ID).trim();
   if (!accountId) {
     throw new Error("personal accountId is required");
+  }
+
+  for (const existing of personalConnectors.values()) {
+    if (existing.accountId !== accountId) {
+      existing.destroy?.().catch(() => {
+        // Ignore teardown errors when replacing the single connector.
+      });
+    }
   }
 
   const connector = createPersonalConnector({
@@ -96,6 +115,7 @@ function registerPersonalConnector(config) {
     sessionDir: config.sessionDir
   });
 
+  personalConnectors.clear();
   personalConnectors.set(accountId, connector);
   return connector;
 }
@@ -253,38 +273,43 @@ app.delete("/accounts/:accountId", async (req, res) => {
 });
 
 app.get("/settings/cloud-accounts", async (_req, res) => {
-  const configs = await prisma.cloudAccountConfig.findMany({
-    orderBy: { accountId: "asc" }
+  const config = await prisma.cloudAccountConfig.findFirst({
+    where: { accountId: DEFAULT_CLOUD_ACCOUNT_ID }
   });
 
-  const data = configs.map((item) => ({
-    accountId: item.accountId,
-    displayName: item.displayName,
-    phoneNumberId: item.phoneNumberId,
-    accessTokenMasked: maskToken(item.accessToken),
-    verifyTokenMasked: maskToken(item.verifyToken),
-    ready: cloudConnectors.get(item.accountId)?.isReady() || false,
-    webhookUrl: `${baseUrl}/webhook/whatsapp/${item.accountId}`,
-    updatedAt: item.updatedAt
-  }));
+  const data = config ? [{
+    accountId: config.accountId,
+    displayName: config.displayName,
+    phoneNumberId: config.phoneNumberId,
+    accessTokenMasked: maskToken(config.accessToken),
+    verifyTokenMasked: maskToken(config.verifyToken),
+    ready: cloudConnectors.get(config.accountId)?.isReady() || false,
+    webhookUrl: `${baseUrl}/webhook/whatsapp/${config.accountId}`,
+    updatedAt: config.updatedAt
+  }] : [];
 
   res.json(data);
 });
 
 app.post("/settings/cloud-accounts", async (req, res) => {
   const {
-    accountId,
     displayName,
     phoneNumberId,
     accessToken,
     verifyToken
   } = req.body || {};
 
-  if (!accountId || !phoneNumberId || !accessToken || !verifyToken) {
+  const accountId = DEFAULT_CLOUD_ACCOUNT_ID;
+
+  if (!phoneNumberId || !accessToken || !verifyToken) {
     return res.status(400).json({
-      error: "accountId, phoneNumberId, accessToken, verifyToken are required"
+      error: "phoneNumberId, accessToken, verifyToken are required"
     });
   }
+
+  await prisma.cloudAccountConfig.deleteMany({
+    where: { accountId: { not: accountId } }
+  });
 
   await prisma.cloudAccountConfig.upsert({
     where: { accountId },
@@ -416,19 +441,22 @@ app.get("/events", async (req, res) => {
 async function bootstrap() {
   bootstrapConnectorMaps();
 
-  const savedCloudAccounts = await prisma.cloudAccountConfig.findMany();
-  for (const account of savedCloudAccounts) {
+  const savedCloudAccount = await prisma.cloudAccountConfig.findFirst({
+    where: { accountId: DEFAULT_CLOUD_ACCOUNT_ID }
+  });
+
+  if (savedCloudAccount) {
     try {
-      registerCloudConnector(account);
+      registerCloudConnector(savedCloudAccount);
       await upsertAccountInfo({
-        accountId: account.accountId,
+        accountId: savedCloudAccount.accountId,
         connector: "cloud",
-        displayName: account.displayName || null,
-        phoneNumberId: account.phoneNumberId,
+        displayName: savedCloudAccount.displayName || null,
+        phoneNumberId: savedCloudAccount.phoneNumberId,
         metadata: { source: "bootstrap-cloud-config" }
       });
     } catch (error) {
-      console.error(`Failed to restore cloud connector ${account.accountId}`, error);
+      console.error(`Failed to restore cloud connector ${savedCloudAccount.accountId}`, error);
     }
   }
 

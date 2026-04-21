@@ -36,7 +36,7 @@ async function loadAccounts() {
   const tabContainer = document.getElementById("accountTabsContainer");
   const pageContainer = document.getElementById("accountPagesContainer");
 
-  tabContainer.innerHTML = '<button type="button" class="account-tab" data-account-id="setup">+ 添加账户</button>';
+  tabContainer.innerHTML = '<button type="button" class="account-tab" data-account-id="setup">连接设置</button>';
   pageContainer.innerHTML = "";
 
   const setupTab = tabContainer.querySelector('[data-account-id="setup"]');
@@ -355,7 +355,7 @@ function renderSetupPage() {
   setupPage.style.display = "none";
   setupPage.innerHTML = `
     <div class="account-details">
-      <h3>添加新账户</h3>
+      <h3>连接设置</h3>
       <div class="connection-selector">
         <h4>选择连接类型</h4>
         <div class="toggle-group">
@@ -367,12 +367,7 @@ function renderSetupPage() {
       <div id="setupPersonalSection">
         <article class="card">
           <h4>个人WhatsApp二维码</h4>
-          <p>通过扫描二维码使用你的个人WhatsApp账户。</p>
-          <label>
-            账户ID (可选):
-            <input type="text" id="setupPersonalAccountId" placeholder="personal-1" />
-          </label>
-          <button type="button" id="setupPersonalBtn">设置个人WhatsApp</button>
+          <p>个人连接使用固定账户 personal-default。请先设置 WA_PERSONAL_SESSION_DIR，然后重启服务并在账户页加载二维码。</p>
         </article>
       </div>
 
@@ -380,10 +375,6 @@ function renderSetupPage() {
         <article class="card">
           <h4>业务WhatsApp API</h4>
           <form id="setupBusinessForm" class="form-grid">
-            <label>
-              账户ID
-              <input type="text" id="setupCloudAccountId" placeholder="cloud-hk" required />
-            </label>
             <label>
               显示名称
               <input type="text" id="setupCloudDisplayName" placeholder="香港WhatsApp业务" />
@@ -402,6 +393,7 @@ function renderSetupPage() {
             </label>
             <button type="submit">保存业务账户</button>
           </form>
+          <p class="hint">保存后会覆盖当前唯一 cloud 账户（cloud-default）。</p>
           <pre id="setupCloudResult"></pre>
         </article>
       </div>
@@ -428,11 +420,6 @@ function renderSetupPage() {
     });
   });
 
-  setupPage.querySelector("#setupPersonalBtn").addEventListener("click", () => {
-    const accountId = setupPage.querySelector("#setupPersonalAccountId").value.trim() || "personal-" + Date.now();
-    switchAccount(accountId);
-  });
-
   setupPage.querySelector("#setupBusinessForm").addEventListener("submit", async (e) => {
     e.preventDefault();
     const resultBox = setupPage.querySelector("#setupCloudResult");
@@ -442,7 +429,6 @@ function renderSetupPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          accountId: setupPage.querySelector("#setupCloudAccountId").value.trim(),
           displayName: setupPage.querySelector("#setupCloudDisplayName").value.trim() || null,
           phoneNumberId: setupPage.querySelector("#setupCloudPhoneNumberId").value.trim(),
           accessToken: setupPage.querySelector("#setupCloudAccessToken").value.trim(),

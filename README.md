@@ -3,7 +3,7 @@
 Node.js server that supports:
 - WhatsApp Business Cloud API
 - Personal WhatsApp via whatsapp-web.js
-- Multi-account for both connectors
+- Single account per connector (one cloud + one personal)
 - Persisting inbound/outbound messages and events into database (Prisma + SQLite by default)
 - Built-in web dashboard for status and message/event viewing
 
@@ -25,12 +25,7 @@ Important fields:
 - `CONNECTOR_MODE=cloud | personal | both`
 - `WA_CLOUD_PHONE_NUMBER_ID`, `WA_CLOUD_ACCESS_TOKEN`, `WA_CLOUD_VERIFY_TOKEN`
 
-For multi-account setup (recommended), use JSON arrays:
-
-```env
-WA_CLOUD_ACCOUNTS_JSON=[{"accountId":"cloud-hk","phoneNumberId":"123","accessToken":"EA...","verifyToken":"vt-hk"}]
-WA_PERSONAL_ACCOUNTS_JSON=[{"accountId":"personal-1","sessionDir":".wwebjs_auth/p1"},{"accountId":"personal-2","sessionDir":".wwebjs_auth/p2"}]
-```
+Optional legacy JSON format is still accepted, but only the first item is used.
 
 ## 3) Init DB
 
@@ -70,7 +65,7 @@ Body examples:
 ```json
 {
   "connector": "cloud",
-  "accountId": "cloud-hk",
+  "accountId": "cloud-default",
   "to": "852XXXXXXXX",
   "text": "Hello from Cloud API"
 }
@@ -79,7 +74,7 @@ Body examples:
 ```json
 {
   "connector": "personal",
-  "accountId": "personal-1",
+  "accountId": "personal-default",
   "to": "852XXXXXXXX",
   "text": "Hello from Personal WhatsApp"
 }
@@ -89,8 +84,8 @@ Body examples:
 
 - `GET /messages?limit=100`
 - `GET /events?limit=100`
-- `GET /messages?limit=100&accountId=personal-1`
-- `GET /events?limit=100&accountId=cloud-hk`
+- `GET /messages?limit=100&accountId=personal-default`
+- `GET /events?limit=100&accountId=cloud-default`
 
 ## Dashboard UI
 
@@ -100,10 +95,10 @@ After starting server, open:
 
 Features:
 - Health and account status view
-- Message and event tables with `accountId` filter
+- Message and event tables
 - Send message form (connector + accountId)
 - Personal WhatsApp QR panel for connection
-- Business API Key menu to add/update Cloud accounts
+- Business API Key menu to configure the single Cloud account
 
 ## New APIs
 
@@ -115,7 +110,6 @@ Example body for `POST /settings/cloud-accounts`:
 
 ```json
 {
-  "accountId": "cloud-hk",
   "displayName": "HK WhatsApp Business",
   "phoneNumberId": "1234567890",
   "accessToken": "EA...",
