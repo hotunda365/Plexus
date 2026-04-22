@@ -3,9 +3,12 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 // 初始化 Gemini (請確保環境變量已設置)
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
 
+// 可用 GEMINI_MODEL 覆蓋，預設使用較穩定的型號。
+const modelName = process.env.GEMINI_MODEL || "gemini-1.5-flash";
+
 // 如果你想手動指定 API 版本（選做，通常修改名稱即可）
 const model = genAI.getGenerativeModel({
-  model: "gemini-1.5-flash-latest",
+  model: modelName,
 });
 
 // 加上這行診斷，看看環境變量到底有沒有讀到
