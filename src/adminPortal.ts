@@ -42,6 +42,8 @@ export type ReviewMessage = {
   priority: 'low' | 'medium' | 'high';
 };
 
+const PENDING_STATUSES = ['pending', 'pending_review'];
+
 function requireEnv(name: string): string {
   const value = process.env[name];
   if (!value) {
@@ -114,6 +116,7 @@ export async function getReviewMessages() {
   const { data: messages, error: messagesError } = await supabase
     .from('px_messages')
     .select('id, tenant_id, connection_id, customer_phone, raw_message, ai_suggestion, final_response, status, created_at')
+    .in('status', PENDING_STATUSES)
     .order('created_at', { ascending: false })
     .limit(50);
 
@@ -234,5 +237,33 @@ export async function approveAndSendMessage(messageId: string, finalResponse: st
     ok: true,
     provider: 'whatsapp',
     sendResult,
+  };
+}
+
+export async function ignoreMessage(messageId: string) {
+  const supabase = getSupabaseAdmin();
+  const { data: message, error: messageError } = await supabase
+    .from('px_messages')
+    .select('id, status')
+    .eq('id', messageId)
+    .single();
+
+  if (messageError || !message) {
+    throw new Error(`Message not found: ${messageError?.message || messageId}`);
+  }
+
+  const { error: updateError } = await supabase
+    .from('px_messages')
+    .update({ status: 'ignored' })
+    .eq('id', messageId);
+
+  if (updateError) {
+    throw new Error(`Failed to ignore message: ${updateError.message}`);
+  }
+
+  return {
+    ok: true,
+    id: messageId,
+    status: 'ignored',
   };
 }

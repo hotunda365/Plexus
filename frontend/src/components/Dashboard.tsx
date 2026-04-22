@@ -1,9 +1,21 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Send, CheckCircle, Clock, AlertCircle, LoaderCircle, RefreshCw, PanelLeftClose, Trash2, Smartphone } from 'lucide-react';
-import { supabase } from '../lib/supabase';
+import {
+  Activity,
+  AlertCircle,
+  Building2,
+  Clock3,
+  LoaderCircle,
+  MessageSquareText,
+  Phone,
+  RefreshCw,
+  Send,
+  ShieldCheck,
+  Siren,
+  Trash2,
+} from 'lucide-react';
 
 type Priority = 'low' | 'medium' | 'high';
-type Status = 'pending' | 'pending_review' | 'sent' | 'rejected' | 'send_failed' | string;
+type Status = 'pending' | 'pending_review' | 'sent' | 'ignored' | 'send_failed' | string;
 
 type ReviewMessage = {
   id: string;
@@ -19,39 +31,18 @@ type ReviewMessage = {
   priority: Priority;
 };
 
-const statusLabel: Record<string, string> = {
-  pending: '待審核',
-  pending_review: '待審核',
-  sent: '已發送',
-  send_failed: '發送失敗',
-  rejected: '已拒絕',
-};
-
-function statusBadge(status: Status) {
-  if (status === 'sent') {
-    return 'bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-500/20';
-  }
-  if (status === 'rejected') {
-    return 'bg-amber-500/15 text-amber-200 ring-1 ring-amber-500/20';
-  }
-  if (status === 'send_failed') {
-    return 'bg-rose-500/15 text-rose-300 ring-1 ring-rose-500/20';
-  }
-  return 'bg-sky-500/15 text-sky-300 ring-1 ring-sky-500/20';
-}
-
-type SupabaseMessageRow = {
+type ApiMessageRow = {
   id: string;
-  customer_phone: string | null;
-  raw_message: string | null;
-  ai_suggestion: string | null;
-  final_response: string | null;
-  status: string | null;
-  created_at: string | null;
-  tenant_id: {
-    name: string | null;
-    org_code: string | null;
-  }[] | null;
+  tenant: string;
+  tenantCode: string;
+  customer: string;
+  text: string;
+  aiSuggestion: string;
+  finalResponse: string;
+  status: string;
+  timestamp: string;
+  createdAt: string | null;
+  priority: Priority;
 };
 
 function inferPriority(text: string): Priority {
@@ -65,69 +56,52 @@ function inferPriority(text: string): Priority {
   return 'low';
 }
 
-function formatTime(timestamp: string | null): string {
-  if (!timestamp) {
-    return 'N/A';
-  }
-
-  const date = new Date(timestamp);
-  if (Number.isNaN(date.getTime())) {
-    return 'N/A';
-  }
-
-  return new Intl.DateTimeFormat('zh-HK', {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(date);
-}
-
-function mapMessage(row: SupabaseMessageRow): ReviewMessage {
-  const text = row.raw_message || '';
-  const aiSuggestion = row.ai_suggestion || '';
-  const tenant = Array.isArray(row.tenant_id) ? row.tenant_id[0] : row.tenant_id;
+function mapMessage(row: ApiMessageRow): ReviewMessage {
+  const text = row.text || '';
+  const aiSuggestion = row.aiSuggestion || '';
 
   return {
     id: row.id,
-    tenant: tenant?.name || 'Unknown Tenant',
-    tenantCode: tenant?.org_code || 'N/A',
-    customer: row.customer_phone || 'Unknown',
+    tenant: row.tenant || 'Unknown Tenant',
+    tenantCode: row.tenantCode || 'N/A',
+    customer: row.customer || 'Unknown',
     text,
     aiSuggestion,
-    finalResponse: row.final_response || aiSuggestion,
+    finalResponse: row.finalResponse || aiSuggestion,
     status: row.status || 'pending',
-    timestamp: formatTime(row.created_at),
-    createdAt: row.created_at,
-    priority: inferPriority(text),
+    timestamp: row.timestamp || 'N/A',
+    createdAt: row.createdAt,
+    priority: row.priority || inferPriority(text),
   };
 }
+
+type HealthPayload = {
+  ok?: boolean;
+};
 
 const PlexusDashboard = () => {
   const [messages, setMessages] = useState<ReviewMessage[]>([]);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
-  const [activeTab, setActiveTab] = useState<'pending' | 'completed'>('pending');
   const [sendingId, setSendingId] = useState('');
-  const [rejectingId, setRejectingId] = useState('');
+  const [ignoringId, setIgnoringId] = useState('');
+  const [isStatusLoading, setIsStatusLoading] = useState(true);
+  const [isSystemOnline, setIsSystemOnline] = useState(false);
 
   const loadMessages = async () => {
     setIsLoading(true);
     setError('');
 
     try {
-      const { data, error: fetchError } = await supabase
-        .from('px_messages')
-        .select('id, customer_phone, raw_message, ai_suggestion, final_response, status, created_at, tenant_id(name, org_code)')
-        .in('status', ['pending', 'pending_review'])
-        .order('created_at', { ascending: false });
+      const response = await fetch('/api/messages');
+      const payload = (await response.json()) as { ok?: boolean; messages?: ApiMessageRow[]; error?: string };
 
-      if (fetchError) {
-        throw new Error(fetchError.message);
+      if (!response.ok || !payload.ok) {
+        throw new Error(payload.error || 'Failed to load pending messages');
       }
 
-      const nextMessages = ((data || []) as SupabaseMessageRow[]).map(mapMessage);
+      const nextMessages = (payload.messages || []).map(mapMessage);
       setMessages(nextMessages);
       setDrafts((current) => {
         const merged = { ...current };
@@ -145,19 +119,27 @@ const PlexusDashboard = () => {
     }
   };
 
+  const loadHealth = async () => {
+    setIsStatusLoading(true);
+
+    try {
+      const response = await fetch('/health');
+      const payload = (await response.json()) as HealthPayload;
+      setIsSystemOnline(Boolean(response.ok && payload.ok));
+    } catch {
+      setIsSystemOnline(false);
+    } finally {
+      setIsStatusLoading(false);
+    }
+  };
+
   useEffect(() => {
     loadMessages();
+    loadHealth();
   }, []);
 
-  const pendingMessages = useMemo(
-    () => messages.filter((message) => message.status === 'pending' || message.status === 'pending_review'),
-    [messages],
-  );
-  const completedMessages = useMemo(
-    () => messages.filter((message) => message.status !== 'pending' && message.status !== 'pending_review'),
-    [messages],
-  );
-  const visibleMessages = activeTab === 'pending' ? pendingMessages : completedMessages;
+  const pendingMessages = useMemo(() => messages.filter((message) => message.status === 'pending' || message.status === 'pending_review'), [messages]);
+  const highPriorityCount = useMemo(() => pendingMessages.filter((message) => message.priority === 'high').length, [pendingMessages]);
 
   const handleDraftChange = (messageId: string, value: string) => {
     setDrafts((current) => ({
@@ -190,18 +172,6 @@ const PlexusDashboard = () => {
         throw new Error(payload.error || 'Failed to send WhatsApp message');
       }
 
-      const { error: updateError } = await supabase
-        .from('px_messages')
-        .update({
-          final_response: finalResponse,
-          status: 'sent',
-        })
-        .eq('id', messageId);
-
-      if (updateError) {
-        throw new Error(updateError.message);
-      }
-
       setMessages((current) =>
         current.map((message) =>
           message.id === messageId
@@ -213,7 +183,7 @@ const PlexusDashboard = () => {
             : message,
         ),
       );
-      setActiveTab('completed');
+      setMessages((current) => current.filter((message) => message.id !== messageId));
     } catch (sendError) {
       setError(sendError instanceof Error ? sendError.message : 'Unknown error');
       setMessages((current) =>
@@ -231,119 +201,96 @@ const PlexusDashboard = () => {
     }
   };
 
-  const handleReject = async (messageId: string) => {
-    setRejectingId(messageId);
+  const handleIgnore = async (messageId: string) => {
+    setIgnoringId(messageId);
     setError('');
 
     try {
-      const { error: updateError } = await supabase
-        .from('px_messages')
-        .update({ status: 'rejected' })
-        .eq('id', messageId);
+      const response = await fetch(`/api/messages/${messageId}/ignore`, {
+        method: 'POST',
+      });
+      const payload = await response.json();
 
-      if (updateError) {
-        throw new Error(updateError.message);
+      if (!response.ok || !payload.ok) {
+        throw new Error(payload.error || 'Failed to ignore message');
       }
 
-      setMessages((current) =>
-        current.map((message) =>
-          message.id === messageId
-            ? {
-                ...message,
-                status: 'rejected',
-              }
-            : message,
-        ),
-      );
-      setActiveTab('completed');
-    } catch (rejectError) {
-      setError(rejectError instanceof Error ? rejectError.message : 'Unknown error');
+      setMessages((current) => current.filter((message) => message.id !== messageId));
+    } catch (ignoreError) {
+      setError(ignoreError instanceof Error ? ignoreError.message : 'Unknown error');
     } finally {
-      setRejectingId('');
+      setIgnoringId('');
     }
   };
 
   return (
-    <div className="min-h-screen bg-[#07111f] text-slate-100">
+    <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(34,197,94,0.18),_transparent_28%),radial-gradient(circle_at_top_right,_rgba(56,189,248,0.16),_transparent_26%),linear-gradient(180deg,_#04111d_0%,_#0b1727_48%,_#07101c_100%)] text-slate-100">
       <div className="mx-auto flex min-h-screen max-w-[1600px] flex-col lg:flex-row">
-        <aside className="w-full border-b border-white/10 bg-slate-950/80 px-5 py-6 backdrop-blur lg:w-80 lg:border-b-0 lg:border-r lg:px-7">
-          <div className="flex items-center justify-between lg:block">
-            <div className="flex items-center gap-3">
-              <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-cyan-500/20 text-lg font-bold text-cyan-300 ring-1 ring-cyan-400/30">P</div>
-              <div>
-                <p className="text-xs uppercase tracking-[0.28em] text-cyan-300/80">Plexus Control</p>
-                <h1 className="text-xl font-semibold text-white">IT Admin Dashboard</h1>
-              </div>
+        <aside className="w-full border-b border-white/10 bg-slate-950/80 px-5 py-6 backdrop-blur-xl lg:w-80 lg:border-b-0 lg:border-r lg:px-7">
+          <div className="flex items-center gap-3">
+            <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-cyan-400/10 ring-1 ring-cyan-300/20">
+              <ShieldCheck className="text-cyan-300" size={24} />
             </div>
-            <div className="rounded-full border border-white/10 p-2 text-slate-400 lg:hidden">
-              <PanelLeftClose size={18} />
+            <div>
+              <p className="text-xs uppercase tracking-[0.32em] text-cyan-300/80">Plexus AI</p>
+              <h1 className="text-xl font-semibold text-white">專業管理後台</h1>
             </div>
           </div>
 
-          <div className="mt-8 grid grid-cols-2 gap-3 lg:grid-cols-1">
-            <button
-              className={`flex items-center gap-3 rounded-2xl px-4 py-3 text-left transition ${
-                activeTab === 'pending' ? 'bg-cyan-500 text-slate-950' : 'bg-white/5 text-slate-300 hover:bg-white/10'
-              }`}
-              onClick={() => setActiveTab('pending')}
-            >
-              <Clock size={18} />
-              <div>
-                <div className="text-sm font-semibold">待審核</div>
-                <div className="text-xs opacity-80">{pendingMessages.length} 則待處理</div>
+          <nav className="mt-8 space-y-3">
+            <div className="rounded-3xl bg-cyan-400 px-4 py-4 text-slate-950 shadow-lg shadow-cyan-950/30">
+              <div className="flex items-center gap-3 text-sm font-semibold">
+                <MessageSquareText size={18} /> 待處理隊列
               </div>
-            </button>
-            <button
-              className={`flex items-center gap-3 rounded-2xl px-4 py-3 text-left transition ${
-                activeTab === 'completed' ? 'bg-emerald-400 text-slate-950' : 'bg-white/5 text-slate-300 hover:bg-white/10'
-              }`}
-              onClick={() => setActiveTab('completed')}
-            >
-              <CheckCircle size={18} />
-              <div>
-                <div className="text-sm font-semibold">已完成</div>
-                <div className="text-xs opacity-80">{completedMessages.length} 則已送出</div>
-              </div>
-            </button>
-          </div>
+              <div className="mt-2 text-3xl font-bold">{pendingMessages.length}</div>
+              <div className="mt-1 text-xs font-medium text-slate-800/80">只顯示 pending / pending_review 訊息</div>
+            </div>
 
-          <div className="mt-6 rounded-3xl border border-white/10 bg-white/5 p-4">
-            <div className="text-xs uppercase tracking-[0.22em] text-slate-400">System Status</div>
-            <div className="mt-3 flex items-center gap-3 text-sm text-emerald-300">
-              <span className="relative flex h-3 w-3">
-                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-70"></span>
-                <span className="relative inline-flex h-3 w-3 rounded-full bg-emerald-400"></span>
-              </span>
-              Zeabur + Supabase Online
-            </div>
-            <div className="mt-4 grid grid-cols-2 gap-3 text-sm text-slate-300">
-              <div className="rounded-2xl bg-slate-900/70 p-3">
-                <div className="text-xs text-slate-500">當前模式</div>
-                <div className="mt-1 font-medium">{import.meta.env.PROD ? 'Production' : 'Development'}</div>
+            <div className="rounded-3xl border border-white/10 bg-white/5 p-4 text-slate-200">
+              <div className="flex items-center gap-3 text-sm font-semibold">
+                <Siren size={18} className="text-rose-300" /> 高優先等級
               </div>
-              <div className="rounded-2xl bg-slate-900/70 p-3">
-                <div className="text-xs text-slate-500">資料來源</div>
-                <div className="mt-1 font-medium">px_messages</div>
+              <div className="mt-2 text-2xl font-semibold">{highPriorityCount}</div>
+              <div className="mt-1 text-xs text-slate-400">含投訴、緊急、退款等語意</div>
+            </div>
+
+            <div className="rounded-3xl border border-white/10 bg-white/5 p-4 text-slate-200">
+              <div className="text-xs uppercase tracking-[0.24em] text-slate-400">System Status</div>
+              <div className="mt-4 flex items-center gap-3 text-sm font-medium">
+                <span className="relative flex h-3 w-3">
+                  <span className={`absolute inline-flex h-full w-full rounded-full opacity-70 ${isSystemOnline ? 'animate-ping bg-emerald-400' : 'bg-amber-400'}`}></span>
+                  <span className={`relative inline-flex h-3 w-3 rounded-full ${isSystemOnline ? 'bg-emerald-400' : 'bg-amber-400'}`}></span>
+                </span>
+                {isStatusLoading ? '檢查 Zeabur 連線...' : isSystemOnline ? 'Zeabur API 正常' : 'Zeabur API 未回應'}
+              </div>
+              <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
+                <div className="rounded-2xl bg-slate-900/80 p-3">
+                  <div className="text-xs text-slate-500">資料表</div>
+                  <div className="mt-1 font-medium">px_messages</div>
+                </div>
+                <div className="rounded-2xl bg-slate-900/80 p-3">
+                  <div className="text-xs text-slate-500">環境</div>
+                  <div className="mt-1 font-medium">{import.meta.env.PROD ? 'Production' : 'Development'}</div>
+                </div>
               </div>
             </div>
-            <div className="mt-3 flex items-center gap-2 rounded-2xl bg-slate-900/60 px-3 py-3 text-xs text-slate-400">
-              <Smartphone size={14} className="text-cyan-300" />
-              手機版已優化，可直接審核與發送。
-            </div>
-          </div>
+          </nav>
         </aside>
 
         <main className="flex-1 px-4 py-5 sm:px-6 lg:px-8 lg:py-8">
-          <div className="rounded-[28px] border border-white/10 bg-slate-900/50 shadow-2xl shadow-black/20 backdrop-blur">
+          <div className="rounded-[30px] border border-white/10 bg-slate-900/55 shadow-2xl shadow-black/30 backdrop-blur-xl">
             <header className="flex flex-col gap-4 border-b border-white/10 px-5 py-5 sm:px-6 lg:flex-row lg:items-center lg:justify-between lg:px-8">
               <div>
-                <p className="text-xs uppercase tracking-[0.26em] text-cyan-300/80">Review Center</p>
-                <h2 className="mt-2 text-2xl font-semibold text-white">{activeTab === 'pending' ? '待處理訊息隊列' : '已完成發送紀錄'}</h2>
-                <p className="mt-2 text-sm text-slate-400">直接從 Supabase 讀取 pending 訊息，校對後送出 WhatsApp，或標記為 rejected。</p>
+                <p className="text-xs uppercase tracking-[0.3em] text-cyan-300/80">Review Center</p>
+                <h2 className="mt-2 text-2xl font-semibold text-white">Plexus AI 待處理訊息中心</h2>
+                <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-400">從 pending 佇列讀取訊息，人工校對 AI 回覆後一鍵送出 WhatsApp，或直接忽略並從清單移除。</p>
               </div>
               <button
-                className="inline-flex items-center justify-center gap-2 self-start rounded-2xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-medium text-slate-200 transition hover:bg-white/10"
-                onClick={loadMessages}
+                className="inline-flex items-center justify-center gap-2 self-start rounded-2xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-medium text-slate-200 transition hover:bg-white/10 disabled:opacity-60"
+                onClick={() => {
+                  loadMessages();
+                  loadHealth();
+                }}
                 disabled={isLoading}
               >
                 <RefreshCw size={16} className={isLoading ? 'animate-spin' : ''} />
@@ -351,60 +298,92 @@ const PlexusDashboard = () => {
               </button>
             </header>
 
+            <div className="grid gap-4 border-b border-white/10 px-5 py-5 sm:grid-cols-3 sm:px-6 lg:px-8">
+              <div className="rounded-3xl border border-white/10 bg-white/5 p-4">
+                <div className="flex items-center gap-2 text-sm text-slate-300">
+                  <Clock3 size={16} className="text-cyan-300" /> 待處理總數
+                </div>
+                <div className="mt-3 text-3xl font-semibold text-white">{pendingMessages.length}</div>
+              </div>
+              <div className="rounded-3xl border border-white/10 bg-white/5 p-4">
+                <div className="flex items-center gap-2 text-sm text-slate-300">
+                  <Activity size={16} className="text-emerald-300" /> 送出通道
+                </div>
+                <div className="mt-3 text-lg font-semibold text-white">WhatsApp API</div>
+                <div className="mt-1 text-xs text-slate-500">確認發送後同步更新狀態為 sent</div>
+              </div>
+              <div className="rounded-3xl border border-white/10 bg-white/5 p-4">
+                <div className="flex items-center gap-2 text-sm text-slate-300">
+                  <Building2 size={16} className="text-violet-300" /> 租戶維度
+                </div>
+                <div className="mt-3 text-lg font-semibold text-white">Tenant Ready</div>
+                <div className="mt-1 text-xs text-slate-500">卡片顯示電話、時間、Tenant 與 AI 建議</div>
+              </div>
+            </div>
+
             <div className="px-5 py-5 sm:px-6 lg:px-8">
-              {error ? (
-                <div className="mb-5 rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{error}</div>
-              ) : null}
+              {error ? <div className="mb-5 rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{error}</div> : null}
 
               {isLoading ? (
                 <div className="flex min-h-[320px] items-center justify-center text-slate-300">
-                  <LoaderCircle className="mr-3 animate-spin" size={22} /> 載入訊息中...
+                  <LoaderCircle className="mr-3 animate-spin" size={22} /> 載入待處理訊息中...
                 </div>
-              ) : visibleMessages.length === 0 ? (
+              ) : pendingMessages.length === 0 ? (
                 <div className="rounded-[28px] border border-dashed border-white/10 bg-slate-950/40 px-6 py-16 text-center text-slate-400">
-                  目前沒有{activeTab === 'pending' ? '待審核' : '已完成'}訊息。
+                  目前沒有待處理訊息。
                 </div>
               ) : (
                 <div className="space-y-5">
-                  {visibleMessages.map((msg) => {
+                  {pendingMessages.map((msg) => {
                     const isSending = sendingId === msg.id;
+                    const isIgnoring = ignoringId === msg.id;
+
                     return (
                       <article key={msg.id} className="overflow-hidden rounded-[28px] border border-white/10 bg-slate-950/70">
-                        <div className="flex flex-col gap-4 border-b border-white/10 px-5 py-5 lg:flex-row lg:items-center lg:justify-between lg:px-6">
-                          <div className="flex flex-wrap items-center gap-3">
-                            <span className="rounded-full bg-cyan-500/15 px-3 py-1 text-[11px] font-bold uppercase tracking-[0.24em] text-cyan-200">{msg.tenantCode}</span>
-                            <span className="text-sm font-medium text-slate-200">{msg.tenant}</span>
-                            <span className="text-sm text-slate-400">{msg.customer}</span>
+                        <div className="flex flex-col gap-4 border-b border-white/10 px-5 py-5 lg:flex-row lg:items-start lg:justify-between lg:px-6">
+                          <div className="space-y-3">
+                            <div className="flex flex-wrap items-center gap-2 text-xs">
+                              <span className="rounded-full bg-cyan-500/15 px-3 py-1 font-bold uppercase tracking-[0.24em] text-cyan-200">{msg.tenantCode}</span>
+                              {msg.priority === 'high' ? (
+                                <span className="inline-flex items-center gap-1 rounded-full bg-rose-500/15 px-3 py-1 font-semibold text-rose-300 ring-1 ring-rose-500/20">
+                                  <AlertCircle size={14} /> 緊急
+                                </span>
+                              ) : null}
+                            </div>
+                            <h3 className="text-lg font-semibold text-white">{msg.tenant}</h3>
+                            <div className="grid gap-2 text-sm text-slate-300 sm:grid-cols-3">
+                              <div className="inline-flex items-center gap-2 rounded-2xl bg-white/5 px-3 py-2">
+                                <Phone size={15} className="text-cyan-300" /> {msg.customer}
+                              </div>
+                              <div className="inline-flex items-center gap-2 rounded-2xl bg-white/5 px-3 py-2">
+                                <Clock3 size={15} className="text-cyan-300" /> {msg.timestamp}
+                              </div>
+                              <div className="inline-flex items-center gap-2 rounded-2xl bg-white/5 px-3 py-2">
+                                <Building2 size={15} className="text-cyan-300" /> Tenant {msg.tenantCode}
+                              </div>
+                            </div>
                           </div>
-                          <div className="flex flex-wrap items-center gap-2 text-xs">
-                            {msg.priority === 'high' ? (
-                              <span className="inline-flex items-center gap-1 rounded-full bg-rose-500/15 px-3 py-1 font-semibold text-rose-300 ring-1 ring-rose-500/20">
-                                <AlertCircle size={14} /> 緊急
-                              </span>
-                            ) : null}
-                            <span className={`rounded-full px-3 py-1 font-semibold ${statusBadge(msg.status)}`}>
-                              {statusLabel[msg.status] || msg.status}
-                            </span>
-                            <span className="text-slate-500">{msg.timestamp}</span>
+                          <div className="rounded-2xl bg-sky-500/10 px-3 py-2 text-xs font-medium text-sky-200 ring-1 ring-sky-500/20">
+                            狀態: 待人工確認
                           </div>
                         </div>
 
-                        <div className="grid gap-5 px-5 py-5 lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)] lg:px-6">
-                          <section className="rounded-3xl border border-white/8 bg-slate-900/60 p-4">
-                            <div className="text-[11px] font-black uppercase tracking-[0.24em] text-slate-500">客戶原訊</div>
+                        <div className="grid gap-5 px-5 py-5 lg:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)] lg:px-6">
+                          <section className="rounded-3xl border border-white/10 bg-slate-900/70 p-4">
+                            <div className="text-[11px] font-black uppercase tracking-[0.24em] text-slate-500">客戶訊息</div>
                             <p className="mt-3 whitespace-pre-wrap text-sm leading-7 text-slate-200">{msg.text || '沒有原始訊息內容'}</p>
                           </section>
 
                           <section className="rounded-3xl border border-cyan-400/10 bg-cyan-500/5 p-4">
                             <div className="flex items-center justify-between gap-3">
-                              <div className="text-[11px] font-black uppercase tracking-[0.24em] text-cyan-300/80">AI 擬稿內容</div>
-                              <span className="text-xs text-slate-500">可直接編輯後送出</span>
+                              <div className="text-[11px] font-black uppercase tracking-[0.24em] text-cyan-300/80">AI 建議回覆</div>
+                              <span className="text-xs text-slate-500">Textarea 可直接編輯</span>
                             </div>
                             <textarea
-                              className="mt-3 min-h-40 w-full rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-3 text-sm leading-7 text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-cyan-400/40 focus:ring-2 focus:ring-cyan-400/20"
+                              className="mt-3 min-h-44 w-full rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-3 text-sm leading-7 text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-cyan-400/40 focus:ring-2 focus:ring-cyan-400/20"
                               value={drafts[msg.id] ?? msg.finalResponse ?? msg.aiSuggestion}
                               onChange={(event) => handleDraftChange(msg.id, event.target.value)}
-                              disabled={msg.status === 'sent'}
+                              placeholder="輸入要送出的 WhatsApp 回覆內容"
                             />
                           </section>
                         </div>
@@ -413,20 +392,20 @@ const PlexusDashboard = () => {
                           <div className="text-xs text-slate-500">Message ID: {msg.id}</div>
                           <div className="flex flex-col gap-3 sm:flex-row">
                             <button
-                              className="inline-flex items-center justify-center gap-2 rounded-2xl border border-rose-400/20 bg-rose-500/10 px-5 py-3 text-sm font-semibold text-rose-200 transition hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-50"
-                              onClick={() => handleReject(msg.id)}
-                              disabled={rejectingId === msg.id || sendingId === msg.id || msg.status === 'sent'}
+                              className="inline-flex items-center justify-center gap-2 rounded-2xl border border-amber-400/20 bg-amber-500/10 px-5 py-3 text-sm font-semibold text-amber-100 transition hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+                              onClick={() => handleIgnore(msg.id)}
+                              disabled={isIgnoring || isSending}
                             >
-                              {rejectingId === msg.id ? <LoaderCircle className="animate-spin" size={18} /> : <Trash2 size={18} />}
-                              Reject / Delete
+                              {isIgnoring ? <LoaderCircle className="animate-spin" size={18} /> : <Trash2 size={18} />}
+                              忽略
                             </button>
                             <button
                               className="inline-flex items-center justify-center gap-2 rounded-2xl bg-cyan-400 px-5 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:bg-slate-600 disabled:text-slate-300"
                               onClick={() => handleApprove(msg.id)}
-                              disabled={isSending || msg.status === 'sent' || msg.status === 'rejected'}
+                              disabled={isSending || isIgnoring}
                             >
                               {isSending ? <LoaderCircle className="animate-spin" size={18} /> : <Send size={18} />}
-                              {msg.status === 'sent' ? '已送出' : 'Approve & Send'}
+                              確認發送
                             </button>
                           </div>
                         </div>

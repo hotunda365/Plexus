@@ -1,7 +1,7 @@
 import express from 'express';
 import { existsSync } from 'fs';
 import { resolve } from 'path';
-import { approveAndSendMessage, getReviewMessages } from './adminPortal';
+import { approveAndSendMessage, getReviewMessages, ignoreMessage } from './adminPortal';
 import { handleWhatsAppWebhook } from './whatsappWebhook';
 
 const app = express();
@@ -27,6 +27,16 @@ app.get('/api/messages', async (_req, res) => {
 app.post('/api/messages/:id/approve-send', async (req, res) => {
   try {
     const result = await approveAndSendMessage(req.params.id, String(req.body.finalResponse || ''));
+    res.status(200).json(result);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    res.status(500).json({ ok: false, error: message });
+  }
+});
+
+app.post('/api/messages/:id/ignore', async (req, res) => {
+  try {
+    const result = await ignoreMessage(req.params.id);
     res.status(200).json(result);
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error';
