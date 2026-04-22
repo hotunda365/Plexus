@@ -4,7 +4,7 @@
   "description": "",
   "main": "dist/index.js",
   "scripts": {
-    "build": "npm --prefix frontend install && npm --prefix frontend run build && tsc",
+    "build": "npm --prefix frontend install --include=dev && npm --prefix frontend run build && tsc",
     "start": "node -r ts-node/register src/index.ts",
     "dev": "node -r ts-node/register src/index.ts",
     "test": "echo \"Error: no test specified\" && exit 1"
