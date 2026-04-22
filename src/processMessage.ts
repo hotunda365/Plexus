@@ -1,18 +1,33 @@
 import { createClient } from '@supabase/supabase-js';
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import * as dotenv from 'dotenv';
+import { resolve } from 'path';
 
-dotenv.config();
+dotenv.config({ path: resolve(__dirname, '../.env') });
 
-// 初始化工具
-const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!);
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
+function requireEnv(name: string): string {
+    const value = process.env[name];
+    if (!value) {
+        throw new Error(`Missing required environment variable: ${name}`);
+    }
+    return value;
+}
+
+function getClients() {
+    const supabase = createClient(
+        requireEnv('SUPABASE_URL'),
+        requireEnv('SUPABASE_SERVICE_ROLE_KEY')
+    );
+    const genAI = new GoogleGenerativeAI(requireEnv('GEMINI_API_KEY'));
+    return { supabase, genAI };
+}
 
 // 加上這行診斷，看看環境變量到底有沒有讀到
 console.log("Current Key Prefix:", process.env.GEMINI_API_KEY?.substring(0, 7));
 
-async function processIncomingMessage(tenantCode: string, customerMsg: string) {
-    console.log(`[Plexus] 正在處理 \${tenantCode} 的新訊息: "\${customerMsg}"`);
+export async function processIncomingMessage(tenantCode: string, customerMsg: string) {
+    console.log(`[Plexus] 正在處理 ${tenantCode} 的新訊息: "${customerMsg}"`);
+    const { supabase, genAI } = getClients();
 
     // 1. 找到對應的甲方資料
     const { data: tenant, error: tenantError } = await supabase
@@ -46,14 +61,20 @@ async function processIncomingMessage(tenantCode: string, customerMsg: string) {
 
         if (!insertError) {
             console.log(`✅ AI 建議已生成並存入待審核池！`);
-            console.log(`🤖 AI 建議內容: \${aiSuggestion}`);
+            console.log(`🤖 AI 建議內容: ${aiSuggestion}`);
         } else {
             console.error("儲存訊息失敗:", insertError);
         }
     } catch (apiError) {
         console.error("Gemini API 呼叫失敗:", apiError);
+        throw apiError;
     }
 }
 
-// 執行測試：模擬客戶詢問 PX001
-processIncomingMessage('DEMO001', '請問你們辦公室在哪裡？');
+// 直接執行此檔案時，跑一次測試流程。
+if (require.main === module) {
+    processIncomingMessage('DEMO001', '請問你們辦公室在哪裡？').catch((error) => {
+        console.error('處理訊息失敗:', error);
+        process.exitCode = 1;
+    });
+}
