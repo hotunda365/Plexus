@@ -41,7 +41,7 @@ export async function processIncomingMessage(tenantCode: string, customerMsg: st
     }
 
     // 2. 呼叫 Gemini 生成建議 (帶入脈絡)
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest" });
     const prompt = `你是 \${tenant.name} 的 AI 客服。
     客戶問：\${customerMsg}
     請提供一個專業的回覆建議。`;
