@@ -222,7 +222,7 @@ export async function approveAndSendMessage(messageId: string, finalResponse: st
     .from('px_messages')
     .update({
       final_response: responseText,
-      status: 'approved_sent',
+      status: 'sent',
     })
     .eq('id', messageId);
 
