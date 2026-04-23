@@ -17,6 +17,13 @@ type ParsedInboundMessage = {
   mediaFilename: string;
 };
 
+type MediaStorageResult = {
+  bucket: string | null;
+  path: string | null;
+  status: string;
+  error: string | null;
+};
+
 function env(name: string, fallback = ""): string {
   return Deno.env.get(name) ?? fallback;
 }
@@ -31,6 +38,186 @@ function requireEnv(name: string): string {
 
 function getSupabaseAdmin() {
   return createClient(requireEnv("SUPABASE_URL"), requireEnv("SUPABASE_SERVICE_ROLE_KEY"));
+}
+
+function safeSlug(input: string): string {
+  return input.replace(/[^a-zA-Z0-9_-]/g, "_");
+}
+
+function extensionFromMimeType(mimeType: string, fallbackType: string): string {
+  const normalized = mimeType.toLowerCase();
+  if (normalized.includes("jpeg")) return "jpg";
+  if (normalized.includes("png")) return "png";
+  if (normalized.includes("gif")) return "gif";
+  if (normalized.includes("webp")) return "webp";
+  if (normalized.includes("ogg")) return "ogg";
+  if (normalized.includes("mpeg")) return "mp3";
+  if (normalized.includes("mp4")) return "mp4";
+  if (normalized.includes("pdf")) return "pdf";
+  if (normalized.includes("json")) return "json";
+  if (fallbackType === "image") return "jpg";
+  if (fallbackType === "audio") return "ogg";
+  if (fallbackType === "video") return "mp4";
+  if (fallbackType === "document") return "bin";
+  return "bin";
+}
+
+async function ensureStorageBucket(bucketName: string): Promise<void> {
+  const supabase = getSupabaseAdmin();
+  const { data, error } = await supabase.storage.getBucket(bucketName);
+  if (!error && data) {
+    return;
+  }
+
+  const { error: createError } = await supabase.storage.createBucket(bucketName, {
+    public: false,
+    fileSizeLimit: "100MB",
+  });
+
+  if (createError && !String(createError.message).toLowerCase().includes("already")) {
+    throw new Error(createError.message);
+  }
+}
+
+async function resolveConnectionAccessTokenByPhoneNumberId(phoneNumberId: string): Promise<string> {
+  if (phoneNumberId) {
+    const supabase = getSupabaseAdmin();
+    const { data, error } = await supabase
+      .from("px_connections")
+      .select("access_token")
+      .eq("phone_number_id", phoneNumberId)
+      .eq("platform", "whatsapp")
+      .single();
+
+    if (!error && data?.access_token) {
+      return String(data.access_token);
+    }
+
+    const { data: tenantData, error: tenantError } = await supabase
+      .from("px_tenants")
+      .select("wa_access_token")
+      .eq("wa_phone_number_id", phoneNumberId)
+      .single();
+
+    if (!tenantError && tenantData?.wa_access_token) {
+      return String(tenantData.wa_access_token);
+    }
+  }
+
+  return env("WHATSAPP_ACCESS_TOKEN", "");
+}
+
+async function persistWhatsAppMedia(params: {
+  mediaId: string;
+  mediaMimeType: string;
+  messageType: string;
+  messageTimestamp: string;
+  businessPhoneNumberId: string;
+}): Promise<MediaStorageResult> {
+  if (!params.mediaId) {
+    return {
+      bucket: null,
+      path: null,
+      status: "not_applicable",
+      error: null,
+    };
+  }
+
+  try {
+    const accessToken = await resolveConnectionAccessTokenByPhoneNumberId(params.businessPhoneNumberId);
+    if (!accessToken) {
+      return {
+        bucket: null,
+        path: null,
+        status: "skipped_missing_access_token",
+        error: "Missing WhatsApp access token",
+      };
+    }
+
+    const apiVersion = env("WHATSAPP_API_VERSION", "v21.0");
+    const metaRes = await fetch(`https://graph.facebook.com/${apiVersion}/${params.mediaId}`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+
+    const metaData = await metaRes.json();
+    if (!metaRes.ok) {
+      return {
+        bucket: null,
+        path: null,
+        status: "download_failed",
+        error: metaData?.error?.message || `Meta media lookup failed (${metaRes.status})`,
+      };
+    }
+
+    const mediaUrl = String(metaData?.url || "");
+    const mimeType = String(metaData?.mime_type || params.mediaMimeType || "application/octet-stream");
+    if (!mediaUrl) {
+      return {
+        bucket: null,
+        path: null,
+        status: "download_failed",
+        error: "Meta media URL is missing",
+      };
+    }
+
+    const fileRes = await fetch(mediaUrl, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+
+    if (!fileRes.ok) {
+      return {
+        bucket: null,
+        path: null,
+        status: "download_failed",
+        error: `Meta media download failed (${fileRes.status})`,
+      };
+    }
+
+    const fileBytes = new Uint8Array(await fileRes.arrayBuffer());
+    const bucket = env("SUPABASE_MEDIA_BUCKET", "wa-media");
+    await ensureStorageBucket(bucket);
+
+    const datePart = params.messageTimestamp ? new Date(Number(params.messageTimestamp) * 1000) : new Date();
+    const yyyy = String(datePart.getUTCFullYear());
+    const mm = String(datePart.getUTCMonth() + 1).padStart(2, "0");
+    const dd = String(datePart.getUTCDate()).padStart(2, "0");
+    const extension = extensionFromMimeType(mimeType, params.messageType);
+    const phonePart = safeSlug(params.businessPhoneNumberId || "unknown_business");
+    const typePart = safeSlug(params.messageType || "unknown");
+    const mediaPart = safeSlug(params.mediaId);
+    const filePath = `${yyyy}/${mm}/${dd}/${phonePart}/${typePart}/${mediaPart}.${extension}`;
+
+    const supabase = getSupabaseAdmin();
+    const { error: uploadError } = await supabase.storage.from(bucket).upload(filePath, fileBytes, {
+      upsert: false,
+      contentType: mimeType,
+    });
+
+    if (uploadError) {
+      const isDuplicate = String(uploadError.message).toLowerCase().includes("duplicate");
+      return {
+        bucket,
+        path: filePath,
+        status: isDuplicate ? "stored" : "storage_upload_failed",
+        error: isDuplicate ? null : uploadError.message,
+      };
+    }
+
+    return {
+      bucket,
+      path: filePath,
+      status: "stored",
+      error: null,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "unknown media storage error";
+    return {
+      bucket: null,
+      path: null,
+      status: "storage_exception",
+      error: message,
+    };
+  }
 }
 
 async function hasMessageId(waMessageId: string): Promise<boolean> {
@@ -304,6 +491,10 @@ async function insertMessageWithFallback(params: {
   mediaSha256: string;
   mediaCaption: string;
   mediaFilename: string;
+  mediaStorageBucket: string;
+  mediaStoragePath: string;
+  mediaStorageStatus: string;
+  mediaStorageError: string;
 }): Promise<{ stored: boolean; duplicate?: boolean }> {
   const supabase = getSupabaseAdmin();
 
@@ -323,6 +514,10 @@ async function insertMessageWithFallback(params: {
     wa_media_sha256: params.mediaSha256 || null,
     wa_media_caption: params.mediaCaption || null,
     wa_media_filename: params.mediaFilename || null,
+    wa_media_storage_bucket: params.mediaStorageBucket || null,
+    wa_media_storage_path: params.mediaStoragePath || null,
+    wa_media_storage_status: params.mediaStorageStatus || null,
+    wa_media_storage_error: params.mediaStorageError || null,
     message_direction: "inbound",
     wa_business_phone_number_id: params.businessPhoneNumberId || null,
     wa_business_display_phone: params.businessDisplayPhone || null,
@@ -352,6 +547,7 @@ async function insertMessageWithFallback(params: {
     wa_message_type: params.messageType || null,
     wa_message_timestamp: params.messageTimestamp || null,
     wa_media_id: params.mediaId || null,
+    wa_media_storage_status: params.mediaStorageStatus || null,
   });
 
   if (fallbackError) {
@@ -470,6 +666,14 @@ Deno.serve(async (req) => {
     const aiDraft = parsed.aiInput
       ? await getAIResponse(parsed.aiInput)
       : "AI 暫無文字可分析（media only）";
+
+    const mediaStorage = await persistWhatsAppMedia({
+      mediaId: parsed.mediaId,
+      mediaMimeType: parsed.mediaMimeType,
+      messageType,
+      messageTimestamp,
+      businessPhoneNumberId: phoneNumberId,
+    });
     const tenantId =
       (await resolveTenantIdByPhoneNumberId(phoneNumberId)) ||
       (await resolveDefaultTenantId());
@@ -493,6 +697,10 @@ Deno.serve(async (req) => {
       mediaSha256: parsed.mediaSha256,
       mediaCaption: parsed.mediaCaption,
       mediaFilename: parsed.mediaFilename,
+      mediaStorageBucket: mediaStorage.bucket || "",
+      mediaStoragePath: mediaStorage.path || "",
+      mediaStorageStatus: mediaStorage.status,
+      mediaStorageError: mediaStorage.error || "",
     });
 
     return jsonResponse(200, { ok: true, ...result });
