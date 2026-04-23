@@ -6,6 +6,17 @@ type OpenRouterMessage = {
   content: string;
 };
 
+type ParsedInboundMessage = {
+  messageType: string;
+  rawMessage: string;
+  aiInput: string;
+  mediaId: string;
+  mediaMimeType: string;
+  mediaSha256: string;
+  mediaCaption: string;
+  mediaFilename: string;
+};
+
 function env(name: string, fallback = ""): string {
   return Deno.env.get(name) ?? fallback;
 }
@@ -44,6 +55,7 @@ async function hasMessageId(waMessageId: string): Promise<boolean> {
 async function upsertStatusEvent(params: {
   body: unknown;
   phoneNumberId: string;
+  businessDisplayPhone: string;
   statusItem: Record<string, unknown>;
 }) {
   const supabase = getSupabaseAdmin();
@@ -72,6 +84,7 @@ async function upsertStatusEvent(params: {
       .update({
         wa_message_status: waMessageStatus || null,
         wa_message_timestamp: timestamp || null,
+        raw_payload: params.body,
       })
       .eq("wa_message_id", waMessageId);
 
@@ -94,7 +107,7 @@ async function upsertStatusEvent(params: {
     wa_message_status: waMessageStatus || null,
     message_direction: "outbound",
     wa_business_phone_number_id: params.phoneNumberId || null,
-    wa_business_display_phone: null,
+    wa_business_display_phone: params.businessDisplayPhone || null,
     wa_from_phone: params.phoneNumberId || null,
     wa_to_phone: waToPhone || null,
     raw_payload: params.body,
@@ -104,6 +117,110 @@ async function upsertStatusEvent(params: {
   if (insertError && !isMissingColumnError(insertError.message)) {
     throw new Error(insertError.message);
   }
+}
+
+function parseInboundMessage(msg: Record<string, unknown>): ParsedInboundMessage {
+  const messageType = String(msg?.type || "unknown");
+
+  if (messageType === "text") {
+    const body = String((msg as any)?.text?.body || "");
+    return {
+      messageType,
+      rawMessage: body,
+      aiInput: body,
+      mediaId: "",
+      mediaMimeType: "",
+      mediaSha256: "",
+      mediaCaption: "",
+      mediaFilename: "",
+    };
+  }
+
+  if (messageType === "image") {
+    const image = (msg as any)?.image || {};
+    const caption = String(image?.caption || "");
+    return {
+      messageType,
+      rawMessage: caption ? `[image] ${caption}` : "[image]",
+      aiInput: caption,
+      mediaId: String(image?.id || ""),
+      mediaMimeType: String(image?.mime_type || ""),
+      mediaSha256: String(image?.sha256 || ""),
+      mediaCaption: caption,
+      mediaFilename: "",
+    };
+  }
+
+  if (messageType === "audio") {
+    const audio = (msg as any)?.audio || {};
+    return {
+      messageType,
+      rawMessage: "[audio]",
+      aiInput: "",
+      mediaId: String(audio?.id || ""),
+      mediaMimeType: String(audio?.mime_type || ""),
+      mediaSha256: String(audio?.sha256 || ""),
+      mediaCaption: "",
+      mediaFilename: "",
+    };
+  }
+
+  if (messageType === "video") {
+    const video = (msg as any)?.video || {};
+    const caption = String(video?.caption || "");
+    return {
+      messageType,
+      rawMessage: caption ? `[video] ${caption}` : "[video]",
+      aiInput: caption,
+      mediaId: String(video?.id || ""),
+      mediaMimeType: String(video?.mime_type || ""),
+      mediaSha256: String(video?.sha256 || ""),
+      mediaCaption: caption,
+      mediaFilename: "",
+    };
+  }
+
+  if (messageType === "document") {
+    const doc = (msg as any)?.document || {};
+    const filename = String(doc?.filename || "");
+    const caption = String(doc?.caption || "");
+    const text = ["[document]", filename, caption].filter(Boolean).join(" ");
+    return {
+      messageType,
+      rawMessage: text || "[document]",
+      aiInput: caption,
+      mediaId: String(doc?.id || ""),
+      mediaMimeType: String(doc?.mime_type || ""),
+      mediaSha256: String(doc?.sha256 || ""),
+      mediaCaption: caption,
+      mediaFilename: filename,
+    };
+  }
+
+  if (messageType === "sticker") {
+    const sticker = (msg as any)?.sticker || {};
+    return {
+      messageType,
+      rawMessage: "[sticker]",
+      aiInput: "",
+      mediaId: String(sticker?.id || ""),
+      mediaMimeType: String(sticker?.mime_type || ""),
+      mediaSha256: String(sticker?.sha256 || ""),
+      mediaCaption: "",
+      mediaFilename: "",
+    };
+  }
+
+  return {
+    messageType,
+    rawMessage: `[${messageType}]`,
+    aiInput: "",
+    mediaId: "",
+    mediaMimeType: "",
+    mediaSha256: "",
+    mediaCaption: "",
+    mediaFilename: "",
+  };
 }
 
 function isMissingColumnError(message: string): boolean {
@@ -182,6 +299,11 @@ async function insertMessageWithFallback(params: {
   customerName: string;
   businessPhoneNumberId: string;
   businessDisplayPhone: string;
+  mediaId: string;
+  mediaMimeType: string;
+  mediaSha256: string;
+  mediaCaption: string;
+  mediaFilename: string;
 }): Promise<{ stored: boolean; duplicate?: boolean }> {
   const supabase = getSupabaseAdmin();
 
@@ -196,6 +318,11 @@ async function insertMessageWithFallback(params: {
     wa_message_type: params.messageType || null,
     wa_message_timestamp: params.messageTimestamp || null,
     wa_message_status: "received",
+    wa_media_id: params.mediaId || null,
+    wa_media_mime_type: params.mediaMimeType || null,
+    wa_media_sha256: params.mediaSha256 || null,
+    wa_media_caption: params.mediaCaption || null,
+    wa_media_filename: params.mediaFilename || null,
     message_direction: "inbound",
     wa_business_phone_number_id: params.businessPhoneNumberId || null,
     wa_business_display_phone: params.businessDisplayPhone || null,
@@ -224,6 +351,7 @@ async function insertMessageWithFallback(params: {
     wa_message_id: params.messageId || null,
     wa_message_type: params.messageType || null,
     wa_message_timestamp: params.messageTimestamp || null,
+    wa_media_id: params.mediaId || null,
   });
 
   if (fallbackError) {
@@ -304,7 +432,7 @@ Deno.serve(async (req) => {
     }
 
     const value = body?.entry?.[0]?.changes?.[0]?.value;
-    const msg = value?.messages?.[0];
+    const msg = value?.messages?.[0] as Record<string, unknown> | undefined;
     const phoneNumberId = String(value?.metadata?.phone_number_id || "");
     const businessDisplayPhone = String(value?.metadata?.display_phone_number || "");
     const statuses = Array.isArray(value?.statuses) ? value.statuses : [];
@@ -314,31 +442,34 @@ Deno.serve(async (req) => {
         await upsertStatusEvent({
           body,
           phoneNumberId,
+          businessDisplayPhone,
           statusItem: statusItem as Record<string, unknown>,
         });
       }
       return jsonResponse(200, { ok: true, statusEvents: statuses.length });
     }
 
-    const text = msg?.text?.body;
-    const from = msg?.from;
+    const from = String((msg as any)?.from || "");
+    if (!msg || !from) {
+      return jsonResponse(200, { ok: true, skipped: "No inbound message" });
+    }
+
+    const parsed = parseInboundMessage(msg);
     const messageId = String(msg?.id || "");
-    const messageType = String(msg?.type || "text");
+    const messageType = parsed.messageType;
     const messageTimestamp = String(msg?.timestamp || "");
     const customerName = String(value?.contacts?.[0]?.profile?.name || "");
 
-    if (!text || !from) {
-      return jsonResponse(200, { ok: true, skipped: "No inbound text message" });
-    }
-
-    const customerMsg = String(text);
-    const customerPhone = String(from);
+    const customerMsg = parsed.rawMessage;
+    const customerPhone = from;
     const isDuplicate = await hasMessageId(messageId);
     if (isDuplicate) {
       return jsonResponse(200, { ok: true, stored: false, duplicate: true });
     }
 
-    const aiDraft = await getAIResponse(customerMsg);
+    const aiDraft = parsed.aiInput
+      ? await getAIResponse(parsed.aiInput)
+      : "AI 暫無文字可分析（media only）";
     const tenantId =
       (await resolveTenantIdByPhoneNumberId(phoneNumberId)) ||
       (await resolveDefaultTenantId());
@@ -357,6 +488,11 @@ Deno.serve(async (req) => {
       customerName,
       businessPhoneNumberId: phoneNumberId,
       businessDisplayPhone,
+      mediaId: parsed.mediaId,
+      mediaMimeType: parsed.mediaMimeType,
+      mediaSha256: parsed.mediaSha256,
+      mediaCaption: parsed.mediaCaption,
+      mediaFilename: parsed.mediaFilename,
     });
 
     return jsonResponse(200, { ok: true, ...result });
