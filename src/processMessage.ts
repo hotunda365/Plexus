@@ -1,7 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
-import { GoogleGenerativeAI } from "@google/generative-ai";
 import * as dotenv from 'dotenv';
 import { resolve } from 'path';
+import { getAIResponse } from './services/aiService';
 
 dotenv.config({ path: resolve(__dirname, '../.env') });
 
@@ -18,18 +18,12 @@ function getClients() {
         requireEnv('SUPABASE_URL'),
         requireEnv('SUPABASE_SERVICE_ROLE_KEY')
     );
-    const genAI = new GoogleGenerativeAI(requireEnv('GEMINI_API_KEY'));
-    return { supabase, genAI };
+    return { supabase };
 }
-
-const modelName = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
-
-// 加上這行診斷，看看環境變量到底有沒有讀到
-console.log("Current Key Prefix:", process.env.GEMINI_API_KEY?.substring(0, 7));
 
 export async function processIncomingMessage(tenantCode: string, customerMsg: string) {
     console.log(`[Plexus] 正在處理 ${tenantCode} 的新訊息: "${customerMsg}"`);
-    const { supabase, genAI } = getClients();
+    const { supabase } = getClients();
 
     // 1. 找到對應的甲方資料
     const { data: tenant, error: tenantError } = await supabase
@@ -42,15 +36,13 @@ export async function processIncomingMessage(tenantCode: string, customerMsg: st
         return console.error("找不到該甲方:", tenantCode, tenantError?.message);
     }
 
-    // 2. 呼叫 Gemini 生成建議 (帶入脈絡)
-    const model = genAI.getGenerativeModel({ model: modelName });
+    // 2. 呼叫 OpenRouter 生成建議 (帶入脈絡)
     const prompt = `你是 \${tenant.name} 的 AI 客服。
     客戶問：\${customerMsg}
     請提供一個專業的回覆建議。`;
 
     try {
-        const result = await model.generateContent(prompt);
-        const aiSuggestion = result.response.text();
+        const aiSuggestion = await getAIResponse(prompt);
 
         // 3. 存入 px_messages 供訓練員審核
         const { error: insertError } = await supabase.from('px_messages').insert({
@@ -68,7 +60,7 @@ export async function processIncomingMessage(tenantCode: string, customerMsg: st
             console.error("儲存訊息失敗:", insertError);
         }
     } catch (apiError) {
-        console.error("Gemini API 呼叫失敗:", apiError);
+        console.error("OpenRouter API 呼叫失敗:", apiError);
         throw apiError;
     }
 }
