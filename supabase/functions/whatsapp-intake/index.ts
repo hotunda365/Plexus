@@ -69,14 +69,34 @@ async function ensureStorageBucket(bucketName: string): Promise<void> {
     return;
   }
 
+  const configuredLimit = env("SUPABASE_MEDIA_MAX_FILE_SIZE", "20MB");
   const { error: createError } = await supabase.storage.createBucket(bucketName, {
     public: false,
-    fileSizeLimit: "100MB",
+    fileSizeLimit: configuredLimit,
   });
 
-  if (createError && !String(createError.message).toLowerCase().includes("already")) {
-    throw new Error(createError.message);
+  if (!createError) {
+    return;
   }
+
+  const createMessage = String(createError.message || "").toLowerCase();
+  if (createMessage.includes("already")) {
+    return;
+  }
+
+  if (createMessage.includes("maximum allowed size") || createMessage.includes("file size")) {
+    const { error: fallbackError } = await supabase.storage.createBucket(bucketName, {
+      public: false,
+    });
+
+    if (!fallbackError || String(fallbackError.message || "").toLowerCase().includes("already")) {
+      return;
+    }
+
+    throw new Error(fallbackError.message);
+  }
+
+  throw new Error(createError.message);
 }
 
 async function resolveConnectionAccessTokenByPhoneNumberId(phoneNumberId: string): Promise<string> {
@@ -627,83 +647,101 @@ Deno.serve(async (req) => {
       return jsonResponse(404, { ok: false, error: "Not a WhatsApp event" });
     }
 
-    const value = body?.entry?.[0]?.changes?.[0]?.value;
-    const msg = value?.messages?.[0] as Record<string, unknown> | undefined;
-    const phoneNumberId = String(value?.metadata?.phone_number_id || "");
-    const businessDisplayPhone = String(value?.metadata?.display_phone_number || "");
-    const statuses = Array.isArray(value?.statuses) ? value.statuses : [];
+    const entries = Array.isArray(body?.entry) ? body.entry : [];
+    let statusEvents = 0;
+    let storedMessages = 0;
+    let duplicateMessages = 0;
 
-    if (statuses.length > 0) {
-      for (const statusItem of statuses) {
-        await upsertStatusEvent({
-          body,
-          phoneNumberId,
-          businessDisplayPhone,
-          statusItem: statusItem as Record<string, unknown>,
-        });
+    for (const entryItem of entries) {
+      const changes = Array.isArray((entryItem as any)?.changes) ? (entryItem as any).changes : [];
+
+      for (const changeItem of changes) {
+        const value = (changeItem as any)?.value;
+        const phoneNumberId = String(value?.metadata?.phone_number_id || "");
+        const businessDisplayPhone = String(value?.metadata?.display_phone_number || "");
+        const statuses = Array.isArray(value?.statuses) ? value.statuses : [];
+        const messages = Array.isArray(value?.messages) ? value.messages : [];
+
+        for (const statusItem of statuses) {
+          await upsertStatusEvent({
+            body,
+            phoneNumberId,
+            businessDisplayPhone,
+            statusItem: statusItem as Record<string, unknown>,
+          });
+          statusEvents += 1;
+        }
+
+        for (const msgItem of messages) {
+          const msg = msgItem as Record<string, unknown>;
+          const from = String((msg as any)?.from || "");
+          if (!from) {
+            continue;
+          }
+
+          const parsed = parseInboundMessage(msg);
+          const messageId = String(msg?.id || "");
+          const messageType = parsed.messageType;
+          const messageTimestamp = String(msg?.timestamp || "");
+          const customerName = String(value?.contacts?.[0]?.profile?.name || "");
+
+          const isDuplicate = await hasMessageId(messageId);
+          if (isDuplicate) {
+            duplicateMessages += 1;
+            continue;
+          }
+
+          const aiDraft = parsed.aiInput
+            ? await getAIResponse(parsed.aiInput)
+            : "AI 暫無文字可分析（media only）";
+
+          const mediaStorage = await persistWhatsAppMedia({
+            mediaId: parsed.mediaId,
+            mediaMimeType: parsed.mediaMimeType,
+            messageType,
+            messageTimestamp,
+            businessPhoneNumberId: phoneNumberId,
+          });
+          const tenantId =
+            (await resolveTenantIdByPhoneNumberId(phoneNumberId)) ||
+            (await resolveDefaultTenantId());
+
+          const connectionId = await resolveConnectionIdByPhoneNumberId(phoneNumberId);
+          await insertMessageWithFallback({
+            tenantId,
+            connectionId,
+            customerPhone: from,
+            rawMessage: parsed.rawMessage,
+            aiDraft,
+            body,
+            messageId,
+            messageType,
+            messageTimestamp,
+            customerName,
+            businessPhoneNumberId: phoneNumberId,
+            businessDisplayPhone,
+            mediaId: parsed.mediaId,
+            mediaMimeType: parsed.mediaMimeType,
+            mediaSha256: parsed.mediaSha256,
+            mediaCaption: parsed.mediaCaption,
+            mediaFilename: parsed.mediaFilename,
+            mediaStorageBucket: mediaStorage.bucket || "",
+            mediaStoragePath: mediaStorage.path || "",
+            mediaStorageStatus: mediaStorage.status,
+            mediaStorageError: mediaStorage.error || "",
+          });
+          storedMessages += 1;
+        }
       }
-      return jsonResponse(200, { ok: true, statusEvents: statuses.length });
     }
 
-    const from = String((msg as any)?.from || "");
-    if (!msg || !from) {
-      return jsonResponse(200, { ok: true, skipped: "No inbound message" });
-    }
-
-    const parsed = parseInboundMessage(msg);
-    const messageId = String(msg?.id || "");
-    const messageType = parsed.messageType;
-    const messageTimestamp = String(msg?.timestamp || "");
-    const customerName = String(value?.contacts?.[0]?.profile?.name || "");
-
-    const customerMsg = parsed.rawMessage;
-    const customerPhone = from;
-    const isDuplicate = await hasMessageId(messageId);
-    if (isDuplicate) {
-      return jsonResponse(200, { ok: true, stored: false, duplicate: true });
-    }
-
-    const aiDraft = parsed.aiInput
-      ? await getAIResponse(parsed.aiInput)
-      : "AI 暫無文字可分析（media only）";
-
-    const mediaStorage = await persistWhatsAppMedia({
-      mediaId: parsed.mediaId,
-      mediaMimeType: parsed.mediaMimeType,
-      messageType,
-      messageTimestamp,
-      businessPhoneNumberId: phoneNumberId,
+    return jsonResponse(200, {
+      ok: true,
+      stored: storedMessages > 0,
+      storedMessages,
+      duplicateMessages,
+      statusEvents,
     });
-    const tenantId =
-      (await resolveTenantIdByPhoneNumberId(phoneNumberId)) ||
-      (await resolveDefaultTenantId());
-
-    const connectionId = await resolveConnectionIdByPhoneNumberId(phoneNumberId);
-    const result = await insertMessageWithFallback({
-      tenantId,
-      connectionId,
-      customerPhone,
-      rawMessage: customerMsg,
-      aiDraft,
-      body,
-      messageId,
-      messageType,
-      messageTimestamp,
-      customerName,
-      businessPhoneNumberId: phoneNumberId,
-      businessDisplayPhone,
-      mediaId: parsed.mediaId,
-      mediaMimeType: parsed.mediaMimeType,
-      mediaSha256: parsed.mediaSha256,
-      mediaCaption: parsed.mediaCaption,
-      mediaFilename: parsed.mediaFilename,
-      mediaStorageBucket: mediaStorage.bucket || "",
-      mediaStoragePath: mediaStorage.path || "",
-      mediaStorageStatus: mediaStorage.status,
-      mediaStorageError: mediaStorage.error || "",
-    });
-
-    return jsonResponse(200, { ok: true, ...result });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
     return jsonResponse(500, { ok: false, error: message });

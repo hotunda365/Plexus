@@ -12,8 +12,10 @@ import {
   ShieldCheck,
   Siren,
   Trash2,
+  Wifi,
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
+import ConnectionMonitor from './ConnectionMonitor';
 
 type Priority = 'low' | 'medium' | 'high';
 type Status = 'pending' | 'pending_review' | 'sent' | 'ignored' | 'send_failed' | string;
@@ -107,7 +109,10 @@ type HealthPayload = {
   ok?: boolean;
 };
 
+type ActiveTab = 'messages' | 'monitor';
+
 const PlexusDashboard = () => {
+  const [activeTab, setActiveTab] = useState<ActiveTab>('messages');
   const [messages, setMessages] = useState<ReviewMessage[]>([]);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(true);
@@ -280,12 +285,36 @@ const PlexusDashboard = () => {
           </div>
 
           <nav className="mt-8 space-y-3">
-            <div className="rounded-3xl bg-cyan-400 px-4 py-4 text-slate-950 shadow-lg shadow-cyan-950/30">
+            {/* Tab Navigation */}
+            <div className="rounded-3xl border border-white/10 bg-white/5 p-1.5 flex gap-1.5">
+              <button
+                onClick={() => setActiveTab('messages')}
+                className={`flex-1 flex items-center justify-center gap-2 rounded-[20px] px-3 py-3 text-sm font-semibold transition-all ${
+                  activeTab === 'messages'
+                    ? 'bg-cyan-400 text-slate-950 shadow-lg shadow-cyan-950/30'
+                    : 'text-slate-300 hover:bg-white/5'
+                }`}
+              >
+                <MessageSquareText size={16} /> 訊息中心
+              </button>
+              <button
+                onClick={() => setActiveTab('monitor')}
+                className={`flex-1 flex items-center justify-center gap-2 rounded-[20px] px-3 py-3 text-sm font-semibold transition-all ${
+                  activeTab === 'monitor'
+                    ? 'bg-cyan-400 text-slate-950 shadow-lg shadow-cyan-950/30'
+                    : 'text-slate-300 hover:bg-white/5'
+                }`}
+              >
+                <Wifi size={16} /> 連線監控
+              </button>
+            </div>
+
+            <div className="rounded-3xl border border-white/10 bg-white/5 p-4 text-slate-200">
               <div className="flex items-center gap-3 text-sm font-semibold">
                 <MessageSquareText size={18} /> 待處理隊列
               </div>
               <div className="mt-2 text-3xl font-bold">{pendingMessages.length}</div>
-              <div className="mt-1 text-xs font-medium text-slate-800/80">只顯示 pending / pending_review 訊息</div>
+              <div className="mt-1 text-xs font-medium text-slate-400">只顯示 pending / pending_review 訊息</div>
             </div>
 
             <div className="rounded-3xl border border-white/10 bg-white/5 p-4 text-slate-200">
@@ -320,6 +349,9 @@ const PlexusDashboard = () => {
         </aside>
 
         <main className="flex-1 px-4 py-5 sm:px-6 lg:px-8 lg:py-8">
+          {activeTab === 'monitor' ? (
+            <ConnectionMonitor />
+          ) : (
           <div className="rounded-[30px] border border-white/10 bg-slate-900/55 shadow-2xl shadow-black/30 backdrop-blur-xl">
             <header className="flex flex-col gap-4 border-b border-white/10 px-5 py-5 sm:px-6 lg:flex-row lg:items-center lg:justify-between lg:px-8">
               <div>
@@ -458,6 +490,7 @@ const PlexusDashboard = () => {
               )}
             </div>
           </div>
+          )}
         </main>
       </div>
     </div>

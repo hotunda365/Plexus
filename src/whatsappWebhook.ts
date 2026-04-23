@@ -65,14 +65,34 @@ async function ensureStorageBucket(bucketName: string): Promise<void> {
     return;
   }
 
+  const configuredLimit = process.env.SUPABASE_MEDIA_MAX_FILE_SIZE || '20MB';
   const { error: createError } = await supabase.storage.createBucket(bucketName, {
     public: false,
-    fileSizeLimit: '100MB',
+    fileSizeLimit: configuredLimit,
   });
 
-  if (createError && !String(createError.message).toLowerCase().includes('already')) {
-    throw new Error(createError.message);
+  if (!createError) {
+    return;
   }
+
+  const createMessage = String(createError.message || '').toLowerCase();
+  if (createMessage.includes('already')) {
+    return;
+  }
+
+  if (createMessage.includes('maximum allowed size') || createMessage.includes('file size')) {
+    const { error: fallbackError } = await supabase.storage.createBucket(bucketName, {
+      public: false,
+    });
+
+    if (!fallbackError || String(fallbackError.message || '').toLowerCase().includes('already')) {
+      return;
+    }
+
+    throw new Error(fallbackError.message);
+  }
+
+  throw new Error(createError.message);
 }
 
 async function resolveConnectionAccessTokenByPhoneNumberId(phoneNumberId: string): Promise<string> {
@@ -574,90 +594,93 @@ export const handleWhatsAppWebhook = async (req: Request, res: Response) => {
 
     // 檢查這是否為 WhatsApp 的訊息事件
     if (body.object === 'whatsapp_business_account') {
-      const value = body.entry?.[0]?.changes?.[0]?.value;
-      const msg = value?.messages?.[0] as Record<string, unknown> | undefined;
-      const phoneNumberId = String(value?.metadata?.phone_number_id || '');
-      const businessDisplayPhone = String(value?.metadata?.display_phone_number || '');
-      const statuses = Array.isArray(value?.statuses) ? value.statuses : [];
+      const entries = Array.isArray(body.entry) ? body.entry : [];
 
-      if (statuses.length > 0) {
-        for (const statusItem of statuses) {
-          await upsertStatusEvent({
-            body,
-            phoneNumberId,
-            businessDisplayPhone,
-            statusItem: statusItem as Record<string, unknown>,
-          });
-        }
-        return res.sendStatus(200);
-      }
+      for (const entryItem of entries) {
+        const changes = Array.isArray((entryItem as any)?.changes) ? (entryItem as any).changes : [];
 
-      const from = String((msg as any)?.from || '');
-      if (!msg || !from) {
-        return res.sendStatus(200);
-      }
+        for (const changeItem of changes) {
+          const value = (changeItem as any)?.value;
+          const phoneNumberId = String(value?.metadata?.phone_number_id || '');
+          const businessDisplayPhone = String(value?.metadata?.display_phone_number || '');
+          const statuses = Array.isArray(value?.statuses) ? value.statuses : [];
+          const messages = Array.isArray(value?.messages) ? value.messages : [];
 
-      const parsed = parseInboundMessage(msg);
-      const messageId = String(msg?.id || '');
-      const messageType = parsed.messageType;
-      const messageTimestamp = String(msg?.timestamp || '');
-      const customerName = String(value?.contacts?.[0]?.profile?.name || '');
-
-      {
-        const customerMsg = parsed.rawMessage;
-        const customerPhone = from;
-
-        try {
-          const isDuplicate = await hasMessageId(messageId);
-          if (isDuplicate) {
-            console.log(`ℹ️ 重複訊息已略過: ${messageId}`);
-            return res.sendStatus(200);
+          for (const statusItem of statuses) {
+            await upsertStatusEvent({
+              body,
+              phoneNumberId,
+              businessDisplayPhone,
+              statusItem: statusItem as Record<string, unknown>,
+            });
           }
 
-          const aiDraft = parsed.aiInput
-            ? await getAIResponse(parsed.aiInput)
-            : 'AI 暫無文字可分析（media only）';
+          for (const msgItem of messages) {
+            const msg = msgItem as Record<string, unknown>;
+            const from = String((msg as any)?.from || '');
+            if (!from) {
+              continue;
+            }
 
-          const mediaStorage = await persistWhatsAppMedia({
-            mediaId: parsed.mediaId,
-            mediaMimeType: parsed.mediaMimeType,
-            messageType,
-            messageTimestamp,
-            businessPhoneNumberId: phoneNumberId,
-          });
-          const tenantId =
-            (await resolveTenantIdByPhoneNumberId(phoneNumberId)) ||
-            (await resolveDefaultTenantId());
-          const connectionId = await resolveConnectionIdByPhoneNumberId(phoneNumberId);
+            const parsed = parseInboundMessage(msg);
+            const messageId = String(msg?.id || '');
+            const messageType = parsed.messageType;
+            const messageTimestamp = String(msg?.timestamp || '');
+            const customerName = String(value?.contacts?.[0]?.profile?.name || '');
 
-          await insertMessageWithFallback({
-            tenantId,
-            connectionId,
-            customerPhone,
-            rawMessage: customerMsg,
-            aiDraft,
-            body,
-            messageId,
-            messageType,
-            messageTimestamp,
-            customerName,
-            businessPhoneNumberId: phoneNumberId,
-            businessDisplayPhone,
-            mediaId: parsed.mediaId,
-            mediaMimeType: parsed.mediaMimeType,
-            mediaSha256: parsed.mediaSha256,
-            mediaCaption: parsed.mediaCaption,
-            mediaFilename: parsed.mediaFilename,
-            mediaStorageBucket: mediaStorage.bucket || '',
-            mediaStoragePath: mediaStorage.path || '',
-            mediaStorageStatus: mediaStorage.status,
-            mediaStorageError: mediaStorage.error || '',
-          });
+            try {
+              const isDuplicate = await hasMessageId(messageId);
+              if (isDuplicate) {
+                console.log(`ℹ️ 重複訊息已略過: ${messageId}`);
+                continue;
+              }
 
-          console.log('✅ 訊息已存入 Supabase，等待管理員審核');
-        } catch (error) {
-          const message = error instanceof Error ? error.message : 'unknown error';
-          console.error(`Webhook 流程失敗: ${message}`);
+              const aiDraft = parsed.aiInput
+                ? await getAIResponse(parsed.aiInput)
+                : 'AI 暫無文字可分析（media only）';
+
+              const mediaStorage = await persistWhatsAppMedia({
+                mediaId: parsed.mediaId,
+                mediaMimeType: parsed.mediaMimeType,
+                messageType,
+                messageTimestamp,
+                businessPhoneNumberId: phoneNumberId,
+              });
+              const tenantId =
+                (await resolveTenantIdByPhoneNumberId(phoneNumberId)) ||
+                (await resolveDefaultTenantId());
+              const connectionId = await resolveConnectionIdByPhoneNumberId(phoneNumberId);
+
+              await insertMessageWithFallback({
+                tenantId,
+                connectionId,
+                customerPhone: from,
+                rawMessage: parsed.rawMessage,
+                aiDraft,
+                body,
+                messageId,
+                messageType,
+                messageTimestamp,
+                customerName,
+                businessPhoneNumberId: phoneNumberId,
+                businessDisplayPhone,
+                mediaId: parsed.mediaId,
+                mediaMimeType: parsed.mediaMimeType,
+                mediaSha256: parsed.mediaSha256,
+                mediaCaption: parsed.mediaCaption,
+                mediaFilename: parsed.mediaFilename,
+                mediaStorageBucket: mediaStorage.bucket || '',
+                mediaStoragePath: mediaStorage.path || '',
+                mediaStorageStatus: mediaStorage.status,
+                mediaStorageError: mediaStorage.error || '',
+              });
+
+              console.log('✅ 訊息已存入 Supabase，等待管理員審核');
+            } catch (error) {
+              const message = error instanceof Error ? error.message : 'unknown error';
+              console.error(`Webhook 流程失敗: ${message}`);
+            }
+          }
         }
       }
 
