@@ -22,6 +22,13 @@ function getSupabaseAdmin() {
   return createClient(requireEnv("SUPABASE_URL"), requireEnv("SUPABASE_SERVICE_ROLE_KEY"));
 }
 
+function isMissingColumnError(message: string): boolean {
+  return (
+    message.includes("column") &&
+    (message.includes("does not exist") || message.includes("schema cache"))
+  );
+}
+
 async function resolveDefaultTenantId(): Promise<string | null> {
   const supabase = getSupabaseAdmin();
   const tenantCode = env("DEFAULT_TENANT_CODE", "DEMO001");
@@ -56,6 +63,77 @@ async function resolveTenantIdByPhoneNumberId(phoneNumberId: string): Promise<st
   }
 
   return String(data.id);
+}
+
+async function resolveConnectionIdByPhoneNumberId(phoneNumberId: string): Promise<string | null> {
+  if (!phoneNumberId) {
+    return null;
+  }
+
+  const supabase = getSupabaseAdmin();
+  const { data, error } = await supabase
+    .from("px_connections")
+    .select("id")
+    .eq("phone_number_id", phoneNumberId)
+    .eq("platform", "whatsapp")
+    .single();
+
+  if (error || !data?.id) {
+    return null;
+  }
+
+  return String(data.id);
+}
+
+async function insertMessageWithFallback(params: {
+  tenantId: string | null;
+  connectionId: string | null;
+  customerPhone: string;
+  rawMessage: string;
+  aiDraft: string;
+  body: unknown;
+  messageId: string;
+  messageType: string;
+  messageTimestamp: string;
+  customerName: string;
+}) {
+  const supabase = getSupabaseAdmin();
+
+  const fullInsertPayload = {
+    tenant_id: params.tenantId,
+    connection_id: params.connectionId,
+    customer_phone: params.customerPhone,
+    raw_message: params.rawMessage,
+    ai_suggestion: params.aiDraft,
+    status: "pending",
+    wa_message_id: params.messageId || null,
+    wa_message_type: params.messageType || null,
+    wa_message_timestamp: params.messageTimestamp || null,
+    customer_name: params.customerName || null,
+    raw_payload: params.body,
+  };
+
+  const { error: fullInsertError } = await supabase.from("px_messages").insert(fullInsertPayload);
+  if (!fullInsertError) {
+    return;
+  }
+
+  if (!isMissingColumnError(fullInsertError.message)) {
+    throw new Error(fullInsertError.message);
+  }
+
+  const { error: fallbackError } = await supabase.from("px_messages").insert({
+    tenant_id: params.tenantId,
+    connection_id: params.connectionId,
+    customer_phone: params.customerPhone,
+    raw_message: params.rawMessage,
+    ai_suggestion: params.aiDraft,
+    status: "pending",
+  });
+
+  if (fallbackError) {
+    throw new Error(fallbackError.message);
+  }
 }
 
 async function getAIResponse(prompt: string): Promise<string> {
@@ -133,6 +211,10 @@ Deno.serve(async (req) => {
     const phoneNumberId = String(value?.metadata?.phone_number_id || "");
     const text = msg?.text?.body;
     const from = msg?.from;
+    const messageId = String(msg?.id || "");
+    const messageType = String(msg?.type || "text");
+    const messageTimestamp = String(msg?.timestamp || "");
+    const customerName = String(value?.contacts?.[0]?.profile?.name || "");
 
     if (!text || !from) {
       return jsonResponse(200, { ok: true, skipped: "No inbound text message" });
@@ -145,18 +227,19 @@ Deno.serve(async (req) => {
       (await resolveTenantIdByPhoneNumberId(phoneNumberId)) ||
       (await resolveDefaultTenantId());
 
-    const supabase = getSupabaseAdmin();
-    const { error } = await supabase.from("px_messages").insert({
-      customer_phone: customerPhone,
-      raw_message: customerMsg,
-      ai_suggestion: aiDraft,
-      status: "pending",
-      tenant_id: tenantId,
+    const connectionId = await resolveConnectionIdByPhoneNumberId(phoneNumberId);
+    await insertMessageWithFallback({
+      tenantId,
+      connectionId,
+      customerPhone,
+      rawMessage: customerMsg,
+      aiDraft,
+      body,
+      messageId,
+      messageType,
+      messageTimestamp,
+      customerName,
     });
-
-    if (error) {
-      throw new Error(error.message);
-    }
 
     return jsonResponse(200, { ok: true, stored: true });
   } catch (error) {

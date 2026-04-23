@@ -18,6 +18,10 @@ function getSupabaseAdmin() {
   return createClient(requireEnv('SUPABASE_URL'), requireEnv('SUPABASE_SERVICE_ROLE_KEY'));
 }
 
+function isMissingColumnError(message: string): boolean {
+  return message.includes('column') && (message.includes('does not exist') || message.includes('schema cache'));
+}
+
 async function resolveDefaultTenantId() {
   const supabase = getSupabaseAdmin();
   const tenantCode = process.env.DEFAULT_TENANT_CODE || 'DEMO001';
@@ -53,6 +57,77 @@ async function resolveTenantIdByPhoneNumberId(phoneNumberId: string) {
   return String(data.id);
 }
 
+async function resolveConnectionIdByPhoneNumberId(phoneNumberId: string) {
+  if (!phoneNumberId) {
+    return null;
+  }
+
+  const supabase = getSupabaseAdmin();
+  const { data, error } = await supabase
+    .from('px_connections')
+    .select('id')
+    .eq('phone_number_id', phoneNumberId)
+    .eq('platform', 'whatsapp')
+    .single();
+
+  if (error || !data?.id) {
+    return null;
+  }
+
+  return String(data.id);
+}
+
+async function insertMessageWithFallback(params: {
+  tenantId: string | null;
+  connectionId: string | null;
+  customerPhone: string;
+  rawMessage: string;
+  aiDraft: string;
+  body: unknown;
+  messageId: string;
+  messageType: string;
+  messageTimestamp: string;
+  customerName: string;
+}) {
+  const supabase = getSupabaseAdmin();
+
+  const fullInsertPayload = {
+    tenant_id: params.tenantId,
+    connection_id: params.connectionId,
+    customer_phone: params.customerPhone,
+    raw_message: params.rawMessage,
+    ai_suggestion: params.aiDraft,
+    status: 'pending',
+    wa_message_id: params.messageId || null,
+    wa_message_type: params.messageType || null,
+    wa_message_timestamp: params.messageTimestamp || null,
+    customer_name: params.customerName || null,
+    raw_payload: params.body,
+  };
+
+  const { error: fullInsertError } = await supabase.from('px_messages').insert(fullInsertPayload);
+  if (!fullInsertError) {
+    return;
+  }
+
+  if (!isMissingColumnError(fullInsertError.message)) {
+    throw new Error(fullInsertError.message);
+  }
+
+  const { error: fallbackError } = await supabase.from('px_messages').insert({
+    tenant_id: params.tenantId,
+    connection_id: params.connectionId,
+    customer_phone: params.customerPhone,
+    raw_message: params.rawMessage,
+    ai_suggestion: params.aiDraft,
+    status: 'pending',
+  });
+
+  if (fallbackError) {
+    throw new Error(fallbackError.message);
+  }
+}
+
 // 這是在 Meta 開發者後台你自己設定的隨機字串
 const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN || 'PlexusAI_2026_Verify';
 
@@ -81,6 +156,10 @@ export const handleWhatsAppWebhook = async (req: Request, res: Response) => {
       const value = body.entry?.[0]?.changes?.[0]?.value;
       const msg = value?.messages?.[0];
       const phoneNumberId = String(value?.metadata?.phone_number_id || '');
+      const messageId = String(msg?.id || '');
+      const messageType = String(msg?.type || 'text');
+      const messageTimestamp = String(msg?.timestamp || '');
+      const customerName = String(value?.contacts?.[0]?.profile?.name || '');
 
       if (msg?.text?.body) {
         const customerMsg = String(msg.text.body);
@@ -91,19 +170,20 @@ export const handleWhatsAppWebhook = async (req: Request, res: Response) => {
           const tenantId =
             (await resolveTenantIdByPhoneNumberId(phoneNumberId)) ||
             (await resolveDefaultTenantId());
-          const supabase = getSupabaseAdmin();
+          const connectionId = await resolveConnectionIdByPhoneNumberId(phoneNumberId);
 
-          const { error: insertError } = await supabase.from('px_messages').insert({
-            customer_phone: customerPhone,
-            raw_message: customerMsg,
-            ai_suggestion: aiDraft,
-            status: 'pending',
-            tenant_id: tenantId,
+          await insertMessageWithFallback({
+            tenantId,
+            connectionId,
+            customerPhone,
+            rawMessage: customerMsg,
+            aiDraft,
+            body,
+            messageId,
+            messageType,
+            messageTimestamp,
+            customerName,
           });
-
-          if (insertError) {
-            throw new Error(insertError.message);
-          }
 
           console.log('✅ 訊息已存入 Supabase，等待管理員審核');
         } catch (error) {
