@@ -1,11 +1,31 @@
 import * as dotenv from 'dotenv';
 import { createServer, IncomingMessage, ServerResponse } from 'http';
 import { resolve } from 'path';
+import { createClient } from '@supabase/supabase-js';
 import { processIncomingMessage } from './processMessage';
 
 dotenv.config({ path: resolve(__dirname, '../.env') });
 
 const port = Number(process.env.PORT || 3000);
+
+function getSupabaseAdmin() {
+  const url = process.env.SUPABASE_URL;
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!url || !serviceRoleKey) {
+    throw new Error('SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY is missing.');
+  }
+
+  return createClient(url, serviceRoleKey);
+}
+
+function toMinutes(value: string | null, defaultMinutes: number): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    return defaultMinutes;
+  }
+  return Math.min(Math.floor(parsed), 1440);
+}
 
 function sendJson(res: ServerResponse, statusCode: number, payload: Record<string, unknown>) {
   res.statusCode = statusCode;
@@ -32,9 +52,11 @@ function readBody(req: IncomingMessage): Promise<string> {
 
 const server = createServer(async (req, res) => {
   const method = req.method || 'GET';
-  const url = req.url || '/';
+  const rawUrl = req.url || '/';
+  const parsedUrl = new URL(rawUrl, `http://127.0.0.1:${port}`);
+  const pathname = parsedUrl.pathname;
 
-  if (method === 'GET' && url === '/') {
+  if (method === 'GET' && pathname === '/') {
     return sendHtml(
       res,
       `<!doctype html>
@@ -144,11 +166,93 @@ const server = createServer(async (req, res) => {
     );
   }
 
-  if (method === 'GET' && url === '/health') {
+  if (method === 'GET' && pathname === '/health') {
     return sendJson(res, 200, { ok: true, service: 'plexusai' });
   }
 
-  if (method === 'POST' && url === '/process') {
+  if (method === 'GET' && pathname === '/api/diagnose') {
+    try {
+      const minutes = toMinutes(parsedUrl.searchParams.get('minutes'), 30);
+      const sinceIso = new Date(Date.now() - minutes * 60 * 1000).toISOString();
+      const supabase = getSupabaseAdmin();
+
+      const { data: rows, error } = await supabase
+        .from('px_messages')
+        .select('message_direction, wa_business_phone_number_id, wa_business_display_phone, status, created_at')
+        .gte('created_at', sinceIso)
+        .order('created_at', { ascending: false })
+        .limit(2000);
+
+      if (error) {
+        return sendJson(res, 500, {
+          ok: false,
+          error: error.message,
+        });
+      }
+
+      let inbound = 0;
+      let outbound = 0;
+      let unknown = 0;
+      const byBusiness: Record<string, { total: number; inbound: number; outbound: number; unknown: number }> = {};
+      const statusCounts: Record<string, number> = {};
+
+      for (const row of rows || []) {
+        const direction = String((row as any).message_direction || '').toLowerCase();
+        if (direction === 'inbound') {
+          inbound += 1;
+        } else if (direction === 'outbound') {
+          outbound += 1;
+        } else {
+          unknown += 1;
+        }
+
+        const business =
+          String((row as any).wa_business_display_phone || (row as any).wa_business_phone_number_id || 'unknown');
+        if (!byBusiness[business]) {
+          byBusiness[business] = { total: 0, inbound: 0, outbound: 0, unknown: 0 };
+        }
+        byBusiness[business].total += 1;
+        if (direction === 'inbound') {
+          byBusiness[business].inbound += 1;
+        } else if (direction === 'outbound') {
+          byBusiness[business].outbound += 1;
+        } else {
+          byBusiness[business].unknown += 1;
+        }
+
+        const statusKey = String((row as any).status || 'unknown');
+        statusCounts[statusKey] = (statusCounts[statusKey] || 0) + 1;
+      }
+
+      return sendJson(res, 200, {
+        ok: true,
+        timestamp: new Date().toISOString(),
+        checks: {
+          env_variables: {
+            OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY ? 'OK: set' : 'MISSING',
+            SUPABASE_URL: process.env.SUPABASE_URL ? 'OK: set' : 'MISSING',
+            SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY ? 'OK: set' : 'MISSING',
+          },
+          message_flow: {
+            window_minutes: minutes,
+            since: sinceIso,
+            total: (rows || []).length,
+            inbound,
+            outbound,
+            unknown,
+            by_business: byBusiness,
+            status_counts: statusCounts,
+            recent_samples: (rows || []).slice(0, 5),
+          },
+        },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'unknown error';
+      return sendJson(res, 500, { ok: false, error: message });
+    }
+  }
+
+  if (method === 'POST' && pathname === '/process') {
     try {
       const rawBody = await readBody(req);
       const body = rawBody ? JSON.parse(rawBody) : {};

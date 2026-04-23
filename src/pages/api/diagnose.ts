@@ -1,7 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { Request, Response } from 'express';
 
-type CheckStatus = string | Array<{ name: string; status: string }>;
+type CheckStatus = string | Array<{ name: string; status: string }> | Record<string, unknown>;
 
 type DiagnoseReport = {
   timestamp: string;
@@ -12,7 +12,16 @@ type DiagnoseReport = {
     ai_service?: CheckStatus;
     whatsapp_token?: CheckStatus;
     whatsapp_send_scope?: CheckStatus;
+    message_flow?: CheckStatus;
   };
+};
+
+type MessageFlowRow = {
+  message_direction: string | null;
+  wa_business_phone_number_id: string | null;
+  wa_business_display_phone: string | null;
+  status: string | null;
+  created_at: string | null;
 };
 
 function toBooleanQueryFlag(value: unknown): boolean {
@@ -20,6 +29,18 @@ function toBooleanQueryFlag(value: unknown): boolean {
     return true;
   }
   return false;
+}
+
+function toMinutesQuery(value: unknown, defaultMinutes: number): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return defaultMinutes;
+  }
+  const rounded = Math.floor(parsed);
+  if (rounded < 1) {
+    return defaultMinutes;
+  }
+  return Math.min(rounded, 1440);
 }
 
 function getSupabaseAdmin() {
@@ -35,6 +56,7 @@ function getSupabaseAdmin() {
 
 export async function diagnoseHandler(_req: Request, res: Response) {
   const req = _req;
+  const windowMinutes = toMinutesQuery(req.query.minutes, 30);
   const report: DiagnoseReport = {
     timestamp: new Date().toISOString(),
     checks: {},
@@ -89,6 +111,70 @@ export async function diagnoseHandler(_req: Request, res: Response) {
       report.checks.supabase_write_test = 'OK: insert and cleanup succeeded on px_messages';
     } else {
       report.checks.supabase_write_test = 'SKIP: append ?writeTest=1 to run insert/delete test';
+    }
+
+    const sinceIso = new Date(Date.now() - windowMinutes * 60 * 1000).toISOString();
+    const { data: rows, error: flowError } = await supabase
+      .from('px_messages')
+      .select('message_direction, wa_business_phone_number_id, wa_business_display_phone, status, created_at')
+      .gte('created_at', sinceIso)
+      .order('created_at', { ascending: false })
+      .limit(2000);
+
+    if (flowError) {
+      report.checks.message_flow = `FAIL: ${flowError.message}`;
+    } else {
+      const list = (rows || []) as MessageFlowRow[];
+      const byBusiness: Record<string, { total: number; inbound: number; outbound: number; unknown: number }> = {};
+      const statusCounts: Record<string, number> = {};
+
+      let inbound = 0;
+      let outbound = 0;
+      let unknown = 0;
+
+      for (const row of list) {
+        const direction = String(row.message_direction || '').toLowerCase();
+        if (direction === 'inbound') {
+          inbound += 1;
+        } else if (direction === 'outbound') {
+          outbound += 1;
+        } else {
+          unknown += 1;
+        }
+
+        const businessKey = row.wa_business_display_phone || row.wa_business_phone_number_id || 'unknown';
+        if (!byBusiness[businessKey]) {
+          byBusiness[businessKey] = { total: 0, inbound: 0, outbound: 0, unknown: 0 };
+        }
+        byBusiness[businessKey].total += 1;
+        if (direction === 'inbound') {
+          byBusiness[businessKey].inbound += 1;
+        } else if (direction === 'outbound') {
+          byBusiness[businessKey].outbound += 1;
+        } else {
+          byBusiness[businessKey].unknown += 1;
+        }
+
+        const statusKey = row.status || 'unknown';
+        statusCounts[statusKey] = (statusCounts[statusKey] || 0) + 1;
+      }
+
+      report.checks.message_flow = {
+        window_minutes: windowMinutes,
+        since: sinceIso,
+        total: list.length,
+        inbound,
+        outbound,
+        unknown,
+        by_business: byBusiness,
+        status_counts: statusCounts,
+        recent_samples: list.slice(0, 5).map((row) => ({
+          direction: row.message_direction || 'unknown',
+          business: row.wa_business_display_phone || row.wa_business_phone_number_id || 'unknown',
+          status: row.status || 'unknown',
+          at: row.created_at,
+        })),
+      };
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : 'unknown error';
