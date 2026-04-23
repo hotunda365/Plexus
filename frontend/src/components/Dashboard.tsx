@@ -13,6 +13,7 @@ import {
   Siren,
   Trash2,
 } from 'lucide-react';
+import { supabase } from '../lib/supabase';
 
 type Priority = 'low' | 'medium' | 'high';
 type Status = 'pending' | 'pending_review' | 'sent' | 'ignored' | 'send_failed' | string;
@@ -31,18 +32,26 @@ type ReviewMessage = {
   priority: Priority;
 };
 
-type ApiMessageRow = {
+type SupabaseMessageRow = {
   id: string;
-  tenant: string;
-  tenantCode: string;
-  customer: string;
-  text: string;
-  aiSuggestion: string;
-  finalResponse: string;
-  status: string;
-  timestamp: string;
+  tenant_id?:
+    | {
+        name?: string | null;
+        org_code?: string | null;
+      }
+    | {
+        name?: string | null;
+        org_code?: string | null;
+      }[]
+    | null;
+  customer_phone?: string | null;
+  raw_message?: string | null;
+  content?: string | null;
+  ai_suggestion?: string | null;
+  final_response?: string | null;
+  status?: string | null;
+  created_at?: string | null;
   createdAt: string | null;
-  priority: Priority;
 };
 
 function inferPriority(text: string): Priority {
@@ -56,22 +65,41 @@ function inferPriority(text: string): Priority {
   return 'low';
 }
 
-function mapMessage(row: ApiMessageRow): ReviewMessage {
-  const text = row.text || '';
-  const aiSuggestion = row.aiSuggestion || '';
+function formatTimestamp(input?: string | null): string {
+  if (!input) {
+    return 'N/A';
+  }
+
+  const date = new Date(input);
+  if (Number.isNaN(date.getTime())) {
+    return 'N/A';
+  }
+
+  return new Intl.DateTimeFormat('zh-HK', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date);
+}
+
+function mapMessage(row: SupabaseMessageRow): ReviewMessage {
+  const text = row.raw_message || row.content || '';
+  const aiSuggestion = row.ai_suggestion || '';
+  const tenant = Array.isArray(row.tenant_id) ? row.tenant_id[0] : row.tenant_id;
 
   return {
     id: row.id,
-    tenant: row.tenant || 'Unknown Tenant',
-    tenantCode: row.tenantCode || 'N/A',
-    customer: row.customer || 'Unknown',
+    tenant: tenant?.name || 'Unknown Tenant',
+    tenantCode: tenant?.org_code || 'N/A',
+    customer: row.customer_phone || 'Unknown',
     text,
     aiSuggestion,
-    finalResponse: row.finalResponse || aiSuggestion,
+    finalResponse: row.final_response || aiSuggestion,
     status: row.status || 'pending',
-    timestamp: row.timestamp || 'N/A',
-    createdAt: row.createdAt,
-    priority: row.priority || inferPriority(text),
+    timestamp: formatTimestamp(row.created_at),
+    createdAt: row.created_at || null,
+    priority: inferPriority(text),
   };
 }
 
@@ -94,14 +122,17 @@ const PlexusDashboard = () => {
     setError('');
 
     try {
-      const response = await fetch('/api/messages');
-      const payload = (await response.json()) as { ok?: boolean; messages?: ApiMessageRow[]; error?: string };
+      const { data, error: fetchError } = await supabase
+        .from('px_messages')
+        .select('id, tenant_id(name, org_code), customer_phone, raw_message, ai_suggestion, final_response, status, created_at')
+        .eq('status', 'pending')
+        .order('created_at', { ascending: false });
 
-      if (!response.ok || !payload.ok) {
-        throw new Error(payload.error || 'Failed to load pending messages');
+      if (fetchError) {
+        throw new Error(fetchError.message);
       }
 
-      const nextMessages = (payload.messages || []).map(mapMessage);
+      const nextMessages = ((data || []) as SupabaseMessageRow[]).map(mapMessage);
       setMessages(nextMessages);
       setDrafts((current) => {
         const merged = { ...current };
@@ -136,6 +167,17 @@ const PlexusDashboard = () => {
   useEffect(() => {
     loadMessages();
     loadHealth();
+
+    const subscription = supabase
+      .channel('public:px_messages')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'px_messages' }, () => {
+        loadMessages();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(subscription);
+    };
   }, []);
 
   const pendingMessages = useMemo(() => messages.filter((message) => message.status === 'pending' || message.status === 'pending_review'), [messages]);
