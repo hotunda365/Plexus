@@ -37,6 +37,71 @@ async function hasMessageId(waMessageId: string): Promise<boolean> {
   return Array.isArray(data) && data.length > 0;
 }
 
+async function upsertStatusEvent(params: {
+  body: unknown;
+  phoneNumberId: string;
+  statusItem: Record<string, unknown>;
+}) {
+  const supabase = getSupabaseAdmin();
+  const waMessageId = String(params.statusItem?.id || '');
+  const waMessageStatus = String(params.statusItem?.status || '');
+  const waToPhone = String(params.statusItem?.recipient_id || '');
+  const timestamp = String(params.statusItem?.timestamp || '');
+
+  if (!waMessageId) {
+    return;
+  }
+
+  const { data: existing, error: readError } = await supabase
+    .from('px_messages')
+    .select('id')
+    .eq('wa_message_id', waMessageId)
+    .limit(1);
+
+  if (readError) {
+    throw new Error(readError.message);
+  }
+
+  if (Array.isArray(existing) && existing.length > 0) {
+    const { error: updateError } = await supabase
+      .from('px_messages')
+      .update({
+        wa_message_status: waMessageStatus || null,
+        wa_message_timestamp: timestamp || null,
+      })
+      .eq('wa_message_id', waMessageId);
+
+    if (updateError && !isMissingColumnError(updateError.message)) {
+      throw new Error(updateError.message);
+    }
+    return;
+  }
+
+  const fullInsertPayload = {
+    tenant_id: (await resolveTenantIdByPhoneNumberId(params.phoneNumberId)) || (await resolveDefaultTenantId()),
+    connection_id: await resolveConnectionIdByPhoneNumberId(params.phoneNumberId),
+    customer_phone: waToPhone || null,
+    raw_message: null,
+    final_response: null,
+    status: waMessageStatus || 'sent',
+    wa_message_id: waMessageId,
+    wa_message_type: 'status',
+    wa_message_timestamp: timestamp || null,
+    wa_message_status: waMessageStatus || null,
+    message_direction: 'outbound',
+    wa_business_phone_number_id: params.phoneNumberId || null,
+    wa_business_display_phone: null,
+    wa_from_phone: params.phoneNumberId || null,
+    wa_to_phone: waToPhone || null,
+    raw_payload: params.body,
+  };
+
+  const { error: insertError } = await supabase.from('px_messages').insert(fullInsertPayload);
+  if (insertError && !isMissingColumnError(insertError.message)) {
+    throw new Error(insertError.message);
+  }
+}
+
 function isMissingColumnError(message: string): boolean {
   return message.includes('column') && (message.includes('does not exist') || message.includes('schema cache'));
 }
@@ -107,6 +172,8 @@ async function insertMessageWithFallback(params: {
   messageType: string;
   messageTimestamp: string;
   customerName: string;
+  businessPhoneNumberId: string;
+  businessDisplayPhone: string;
 }): Promise<{ stored: boolean; duplicate?: boolean }> {
   const supabase = getSupabaseAdmin();
 
@@ -120,6 +187,12 @@ async function insertMessageWithFallback(params: {
     wa_message_id: params.messageId || null,
     wa_message_type: params.messageType || null,
     wa_message_timestamp: params.messageTimestamp || null,
+    wa_message_status: 'received',
+    message_direction: 'inbound',
+    wa_business_phone_number_id: params.businessPhoneNumberId || null,
+    wa_business_display_phone: params.businessDisplayPhone || null,
+    wa_from_phone: params.customerPhone || null,
+    wa_to_phone: params.businessDisplayPhone || params.businessPhoneNumberId || null,
     customer_name: params.customerName || null,
     raw_payload: params.body,
   };
@@ -140,6 +213,9 @@ async function insertMessageWithFallback(params: {
     raw_message: params.rawMessage,
     ai_suggestion: params.aiDraft,
     status: 'pending',
+    wa_message_id: params.messageId || null,
+    wa_message_type: params.messageType || null,
+    wa_message_timestamp: params.messageTimestamp || null,
   });
 
   if (fallbackError) {
@@ -177,10 +253,23 @@ export const handleWhatsAppWebhook = async (req: Request, res: Response) => {
       const value = body.entry?.[0]?.changes?.[0]?.value;
       const msg = value?.messages?.[0];
       const phoneNumberId = String(value?.metadata?.phone_number_id || '');
+      const businessDisplayPhone = String(value?.metadata?.display_phone_number || '');
+      const statuses = Array.isArray(value?.statuses) ? value.statuses : [];
       const messageId = String(msg?.id || '');
       const messageType = String(msg?.type || 'text');
       const messageTimestamp = String(msg?.timestamp || '');
       const customerName = String(value?.contacts?.[0]?.profile?.name || '');
+
+      if (statuses.length > 0) {
+        for (const statusItem of statuses) {
+          await upsertStatusEvent({
+            body,
+            phoneNumberId,
+            statusItem: statusItem as Record<string, unknown>,
+          });
+        }
+        return res.sendStatus(200);
+      }
 
       if (msg?.text?.body) {
         const customerMsg = String(msg.text.body);
@@ -210,6 +299,8 @@ export const handleWhatsAppWebhook = async (req: Request, res: Response) => {
             messageType,
             messageTimestamp,
             customerName,
+            businessPhoneNumberId: phoneNumberId,
+            businessDisplayPhone,
           });
 
           console.log('✅ 訊息已存入 Supabase，等待管理員審核');

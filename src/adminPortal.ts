@@ -28,6 +28,12 @@ type MessageRow = {
   created_at: string | null;
 };
 
+type SendResult = {
+  contacts?: Array<{ wa_id?: string; input?: string }>;
+  messages?: Array<{ id?: string; message_status?: string }>;
+  [key: string]: unknown;
+};
+
 export type ReviewMessage = {
   id: string;
   tenant: string;
@@ -54,6 +60,10 @@ function requireEnv(name: string): string {
 
 function getSupabaseAdmin() {
   return createClient(requireEnv('SUPABASE_URL'), requireEnv('SUPABASE_SERVICE_ROLE_KEY'));
+}
+
+function isMissingColumnError(message: string): boolean {
+  return message.includes('column') && (message.includes('does not exist') || message.includes('schema cache'));
 }
 
 function inferPriority(text: string): 'low' | 'medium' | 'high' {
@@ -183,11 +193,71 @@ async function sendWhatsAppTextMessage(to: string, body: string, connection?: Co
   return response.json();
 }
 
+async function insertOutboundMessageWithFallback(params: {
+  tenantId: string | null;
+  connectionId: string | null;
+  customerPhone: string;
+  responseText: string;
+  phoneNumberId: string;
+  sendResult: SendResult;
+}) {
+  const supabase = getSupabaseAdmin();
+  const waMessageId = String(params.sendResult?.messages?.[0]?.id || '');
+  const waMessageStatus = String(params.sendResult?.messages?.[0]?.message_status || 'sent');
+  const waToPhone = String(params.sendResult?.contacts?.[0]?.wa_id || params.customerPhone || '');
+
+  const fullInsertPayload = {
+    tenant_id: params.tenantId,
+    connection_id: params.connectionId,
+    customer_phone: params.customerPhone,
+    customer_name: null,
+    raw_message: params.responseText,
+    raw_payload: params.sendResult,
+    ai_suggestion: null,
+    final_response: params.responseText,
+    status: 'sent',
+    wa_message_id: waMessageId || null,
+    wa_message_type: 'text',
+    wa_message_timestamp: new Date().toISOString(),
+    wa_message_status: waMessageStatus,
+    message_direction: 'outbound',
+    wa_business_phone_number_id: params.phoneNumberId || null,
+    wa_business_display_phone: null,
+    wa_from_phone: params.phoneNumberId || null,
+    wa_to_phone: waToPhone || null,
+  };
+
+  const { error: fullInsertError } = await supabase.from('px_messages').insert(fullInsertPayload);
+  if (!fullInsertError) {
+    return;
+  }
+
+  if (!isMissingColumnError(fullInsertError.message)) {
+    throw new Error(fullInsertError.message);
+  }
+
+  const { error: fallbackError } = await supabase.from('px_messages').insert({
+    tenant_id: params.tenantId,
+    connection_id: params.connectionId,
+    customer_phone: params.customerPhone,
+    raw_message: params.responseText,
+    final_response: params.responseText,
+    status: 'sent',
+    wa_message_id: waMessageId || null,
+    wa_message_type: 'text',
+    wa_message_timestamp: new Date().toISOString(),
+  });
+
+  if (fallbackError) {
+    throw new Error(fallbackError.message);
+  }
+}
+
 export async function approveAndSendMessage(messageId: string, finalResponse: string) {
   const supabase = getSupabaseAdmin();
   const { data: message, error: messageError } = await supabase
     .from('px_messages')
-    .select('id, connection_id, customer_phone, ai_suggestion, status')
+    .select('id, tenant_id, connection_id, customer_phone, ai_suggestion, status')
     .eq('id', messageId)
     .single();
 
@@ -219,13 +289,23 @@ export async function approveAndSendMessage(messageId: string, finalResponse: st
     connection = connectionRow as ConnectionRow;
   }
 
-  const sendResult = await sendWhatsAppTextMessage(message.customer_phone, responseText, connection);
+  const sendResult = (await sendWhatsAppTextMessage(message.customer_phone, responseText, connection)) as SendResult;
+
+  const usedPhoneNumberId = connection?.phone_number_id || process.env.WHATSAPP_PHONE_NUMBER_ID || '';
+  await insertOutboundMessageWithFallback({
+    tenantId: message.tenant_id || null,
+    connectionId: message.connection_id || null,
+    customerPhone: message.customer_phone,
+    responseText,
+    phoneNumberId: usedPhoneNumberId,
+    sendResult,
+  });
 
   const { error: updateError } = await supabase
     .from('px_messages')
     .update({
       final_response: responseText,
-      status: 'sent',
+      status: 'replied',
     })
     .eq('id', messageId);
 
