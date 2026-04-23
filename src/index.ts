@@ -2,6 +2,7 @@ import express from 'express';
 import { existsSync } from 'fs';
 import { resolve } from 'path';
 import { approveAndSendMessage, getReviewMessages, ignoreMessage } from './adminPortal';
+import { diagnoseHandler } from './pages/api/diagnose';
 import { handleWhatsAppWebhook } from './whatsappWebhook';
 
 const app = express();
@@ -47,6 +48,8 @@ app.post('/api/messages/:id/ignore', async (req, res) => {
 app.get('/health', (_req, res) => {
   res.status(200).json({ ok: true, service: 'plexusai' });
 });
+
+app.get('/api/diagnose', diagnoseHandler);
 
 if (hasFrontendBuild) {
   app.use(express.static(frontendDistPath));
