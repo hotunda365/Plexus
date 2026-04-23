@@ -99,39 +99,26 @@ export async function diagnoseHandler(_req: Request, res: Response) {
   }
 
   try {
-    const apiKey = process.env.OPENROUTER_API_KEY;
-    if (!apiKey) {
-      throw new Error('OPENROUTER_API_KEY is missing.');
-    }
-
     const aiTest = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'HTTP-Referer': process.env.SITE_URL || '',
-        'X-Title': process.env.SITE_NAME || 'Plexus AI',
+        Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: process.env.OPENROUTER_MODEL || 'google/gemini-flash-1.5',
-        messages: [{ role: 'user', content: 'Check' }],
-        max_tokens: 10,
+        model: 'google/gemini-flash-1.5',
+        messages: [{ role: 'user', content: 'Ping' }],
       }),
     });
 
-    const resData = (await aiTest.json()) as {
-      choices?: Array<{ message?: { content?: string } }>;
-      error?: { message?: string };
-    };
-
-    if (aiTest.ok && resData.choices?.length) {
-      report.checks.ai_service = 'OK: OpenRouter + Gemini reachable';
+    const resData = await aiTest.json();
+    if (resData.choices) {
+      report.checks.ai_service = '✅ 正常 (OpenRouter + Gemini 已通)';
     } else {
-      report.checks.ai_service = `FAIL: ${resData.error?.message || `HTTP ${aiTest.status}`}`;
+      report.checks.ai_service = `❌ OpenRouter 報錯: ${resData.error?.message || '未知錯誤'}`;
     }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'unknown error';
-    report.checks.ai_service = `FAIL: ${message}`;
+  } catch (e: any) {
+    report.checks.ai_service = `❌ 連線失敗: ${e.message}`;
   }
 
   report.checks.whatsapp_token = process.env.WHATSAPP_VERIFY_TOKEN
