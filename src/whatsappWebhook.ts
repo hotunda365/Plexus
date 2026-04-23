@@ -1,7 +1,41 @@
 import { Request, Response } from 'express';
+import { createClient } from '@supabase/supabase-js';
+import * as dotenv from 'dotenv';
+import { resolve } from 'path';
+import { getAIResponse } from './services/aiService';
+
+dotenv.config({ path: resolve(__dirname, '../.env') });
+
+function requireEnv(name: string): string {
+  const value = process.env[name];
+  if (!value) {
+    throw new Error(`Missing required environment variable: ${name}`);
+  }
+  return value;
+}
+
+function getSupabaseAdmin() {
+  return createClient(requireEnv('SUPABASE_URL'), requireEnv('SUPABASE_SERVICE_ROLE_KEY'));
+}
+
+async function resolveDefaultTenantId() {
+  const supabase = getSupabaseAdmin();
+  const tenantCode = process.env.DEFAULT_TENANT_CODE || 'DEMO001';
+  const { data, error } = await supabase
+    .from('px_tenants')
+    .select('id')
+    .eq('org_code', tenantCode)
+    .single();
+
+  if (error || !data?.id) {
+    return null;
+  }
+
+  return String(data.id);
+}
 
 // 這是在 Meta 開發者後台你自己設定的隨機字串
-const VERIFY_TOKEN = 'PlexusAI_2026_Verify';
+const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN || 'PlexusAI_2026_Verify';
 
 export const handleWhatsAppWebhook = async (req: Request, res: Response) => {
   // --- 處理 Meta 的驗證請求 (GET) ---
@@ -25,21 +59,36 @@ export const handleWhatsAppWebhook = async (req: Request, res: Response) => {
 
     // 檢查這是否為 WhatsApp 的訊息事件
     if (body.object === 'whatsapp_business_account') {
-      if (
-        body.entry &&
-        body.entry[0].changes &&
-        body.entry[0].changes[0].value.messages &&
-        body.entry[0].changes[0].value.messages[0]
-      ) {
-        const msg = body.entry[0].changes[0].value.messages[0];
-        const from = msg.from; // 客戶電話
-        const text = msg.text?.body; // 訊息內容
+      const msg = body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
 
-        console.log(`收到來自 ${from} 的訊息: ${text}`);
+      if (msg?.text?.body) {
+        const customerMsg = String(msg.text.body);
+        const customerPhone = String(msg.from || '');
 
-        // TODO: 在這裡呼叫你的存入 Supabase 邏輯
-        // 暫時不接 AI，直接回傳一個收悉確認即可
+        try {
+          const aiDraft = await getAIResponse(customerMsg);
+          const tenantId = await resolveDefaultTenantId();
+          const supabase = getSupabaseAdmin();
+
+          const { error: insertError } = await supabase.from('px_messages').insert({
+            customer_phone: customerPhone,
+            raw_message: customerMsg,
+            ai_suggestion: aiDraft,
+            status: 'pending',
+            tenant_id: tenantId,
+          });
+
+          if (insertError) {
+            throw new Error(insertError.message);
+          }
+
+          console.log('✅ 訊息已存入 Supabase，等待管理員審核');
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'unknown error';
+          console.error(`Webhook 流程失敗: ${message}`);
+        }
       }
+
       return res.sendStatus(200);
     }
     return res.sendStatus(404);
