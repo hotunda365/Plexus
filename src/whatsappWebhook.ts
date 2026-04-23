@@ -18,6 +18,25 @@ function getSupabaseAdmin() {
   return createClient(requireEnv('SUPABASE_URL'), requireEnv('SUPABASE_SERVICE_ROLE_KEY'));
 }
 
+async function hasMessageId(waMessageId: string): Promise<boolean> {
+  if (!waMessageId) {
+    return false;
+  }
+
+  const supabase = getSupabaseAdmin();
+  const { data, error } = await supabase
+    .from('px_messages')
+    .select('id')
+    .eq('wa_message_id', waMessageId)
+    .limit(1);
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return Array.isArray(data) && data.length > 0;
+}
+
 function isMissingColumnError(message: string): boolean {
   return message.includes('column') && (message.includes('does not exist') || message.includes('schema cache'));
 }
@@ -88,7 +107,7 @@ async function insertMessageWithFallback(params: {
   messageType: string;
   messageTimestamp: string;
   customerName: string;
-}) {
+}): Promise<{ stored: boolean; duplicate?: boolean }> {
   const supabase = getSupabaseAdmin();
 
   const fullInsertPayload = {
@@ -107,7 +126,7 @@ async function insertMessageWithFallback(params: {
 
   const { error: fullInsertError } = await supabase.from('px_messages').insert(fullInsertPayload);
   if (!fullInsertError) {
-    return;
+    return { stored: true };
   }
 
   if (!isMissingColumnError(fullInsertError.message)) {
@@ -126,6 +145,8 @@ async function insertMessageWithFallback(params: {
   if (fallbackError) {
     throw new Error(fallbackError.message);
   }
+
+  return { stored: true };
 }
 
 // 這是在 Meta 開發者後台你自己設定的隨機字串
@@ -166,6 +187,12 @@ export const handleWhatsAppWebhook = async (req: Request, res: Response) => {
         const customerPhone = String(msg.from || '');
 
         try {
+          const isDuplicate = await hasMessageId(messageId);
+          if (isDuplicate) {
+            console.log(`ℹ️ 重複訊息已略過: ${messageId}`);
+            return res.sendStatus(200);
+          }
+
           const aiDraft = await getAIResponse(customerMsg);
           const tenantId =
             (await resolveTenantIdByPhoneNumberId(phoneNumberId)) ||

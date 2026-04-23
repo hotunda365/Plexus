@@ -22,6 +22,25 @@ function getSupabaseAdmin() {
   return createClient(requireEnv("SUPABASE_URL"), requireEnv("SUPABASE_SERVICE_ROLE_KEY"));
 }
 
+async function hasMessageId(waMessageId: string): Promise<boolean> {
+  if (!waMessageId) {
+    return false;
+  }
+
+  const supabase = getSupabaseAdmin();
+  const { data, error } = await supabase
+    .from("px_messages")
+    .select("id")
+    .eq("wa_message_id", waMessageId)
+    .limit(1);
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return Array.isArray(data) && data.length > 0;
+}
+
 function isMissingColumnError(message: string): boolean {
   return (
     message.includes("column") &&
@@ -96,7 +115,7 @@ async function insertMessageWithFallback(params: {
   messageType: string;
   messageTimestamp: string;
   customerName: string;
-}) {
+}): Promise<{ stored: boolean; duplicate?: boolean }> {
   const supabase = getSupabaseAdmin();
 
   const fullInsertPayload = {
@@ -115,7 +134,7 @@ async function insertMessageWithFallback(params: {
 
   const { error: fullInsertError } = await supabase.from("px_messages").insert(fullInsertPayload);
   if (!fullInsertError) {
-    return;
+    return { stored: true };
   }
 
   if (!isMissingColumnError(fullInsertError.message)) {
@@ -134,6 +153,8 @@ async function insertMessageWithFallback(params: {
   if (fallbackError) {
     throw new Error(fallbackError.message);
   }
+
+  return { stored: true };
 }
 
 async function getAIResponse(prompt: string): Promise<string> {
@@ -222,13 +243,18 @@ Deno.serve(async (req) => {
 
     const customerMsg = String(text);
     const customerPhone = String(from);
+    const isDuplicate = await hasMessageId(messageId);
+    if (isDuplicate) {
+      return jsonResponse(200, { ok: true, stored: false, duplicate: true });
+    }
+
     const aiDraft = await getAIResponse(customerMsg);
     const tenantId =
       (await resolveTenantIdByPhoneNumberId(phoneNumberId)) ||
       (await resolveDefaultTenantId());
 
     const connectionId = await resolveConnectionIdByPhoneNumberId(phoneNumberId);
-    await insertMessageWithFallback({
+    const result = await insertMessageWithFallback({
       tenantId,
       connectionId,
       customerPhone,
@@ -241,7 +267,7 @@ Deno.serve(async (req) => {
       customerName,
     });
 
-    return jsonResponse(200, { ok: true, stored: true });
+    return jsonResponse(200, { ok: true, ...result });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
     return jsonResponse(500, { ok: false, error: message });
