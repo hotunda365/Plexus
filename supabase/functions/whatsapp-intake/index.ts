@@ -39,8 +39,31 @@ async function resolveDefaultTenantId(): Promise<string | null> {
   return String(data.id);
 }
 
+async function resolveTenantIdByPhoneNumberId(phoneNumberId: string): Promise<string | null> {
+  if (!phoneNumberId) {
+    return null;
+  }
+
+  const supabase = getSupabaseAdmin();
+  const { data, error } = await supabase
+    .from("px_tenants")
+    .select("id")
+    .eq("wa_phone_number_id", phoneNumberId)
+    .single();
+
+  if (error || !data?.id) {
+    return null;
+  }
+
+  return String(data.id);
+}
+
 async function getAIResponse(prompt: string): Promise<string> {
-  const apiKey = requireEnv("OPENROUTER_API_KEY");
+  const apiKey = env("OPENROUTER_API_KEY");
+  if (!apiKey) {
+    return "AI 草稿暫不可用（OPENROUTER_API_KEY 未設定）";
+  }
+
   const model = env("OPENROUTER_MODEL", "openai/gpt-4o-mini");
   const siteUrl = env("SITE_URL", "https://plexus-connect.zeabur.app");
   const siteName = env("SITE_NAME", "Plexus AI");
@@ -66,7 +89,7 @@ async function getAIResponse(prompt: string): Promise<string> {
 
   if (!response.ok) {
     const message = data?.error?.message || `OpenRouter request failed (${response.status})`;
-    throw new Error(message);
+    return `AI 草稿暫不可用（${message}）`;
   }
 
   return data?.choices?.[0]?.message?.content || "AI 暫時無法回應";
@@ -105,7 +128,9 @@ Deno.serve(async (req) => {
       return jsonResponse(404, { ok: false, error: "Not a WhatsApp event" });
     }
 
-    const msg = body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+    const value = body?.entry?.[0]?.changes?.[0]?.value;
+    const msg = value?.messages?.[0];
+    const phoneNumberId = String(value?.metadata?.phone_number_id || "");
     const text = msg?.text?.body;
     const from = msg?.from;
 
@@ -116,7 +141,9 @@ Deno.serve(async (req) => {
     const customerMsg = String(text);
     const customerPhone = String(from);
     const aiDraft = await getAIResponse(customerMsg);
-    const tenantId = await resolveDefaultTenantId();
+    const tenantId =
+      (await resolveTenantIdByPhoneNumberId(phoneNumberId)) ||
+      (await resolveDefaultTenantId());
 
     const supabase = getSupabaseAdmin();
     const { error } = await supabase.from("px_messages").insert({

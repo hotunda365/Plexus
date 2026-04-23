@@ -34,6 +34,25 @@ async function resolveDefaultTenantId() {
   return String(data.id);
 }
 
+async function resolveTenantIdByPhoneNumberId(phoneNumberId: string) {
+  if (!phoneNumberId) {
+    return null;
+  }
+
+  const supabase = getSupabaseAdmin();
+  const { data, error } = await supabase
+    .from('px_tenants')
+    .select('id')
+    .eq('wa_phone_number_id', phoneNumberId)
+    .single();
+
+  if (error || !data?.id) {
+    return null;
+  }
+
+  return String(data.id);
+}
+
 // 這是在 Meta 開發者後台你自己設定的隨機字串
 const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN || 'PlexusAI_2026_Verify';
 
@@ -59,7 +78,9 @@ export const handleWhatsAppWebhook = async (req: Request, res: Response) => {
 
     // 檢查這是否為 WhatsApp 的訊息事件
     if (body.object === 'whatsapp_business_account') {
-      const msg = body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+      const value = body.entry?.[0]?.changes?.[0]?.value;
+      const msg = value?.messages?.[0];
+      const phoneNumberId = String(value?.metadata?.phone_number_id || '');
 
       if (msg?.text?.body) {
         const customerMsg = String(msg.text.body);
@@ -67,7 +88,9 @@ export const handleWhatsAppWebhook = async (req: Request, res: Response) => {
 
         try {
           const aiDraft = await getAIResponse(customerMsg);
-          const tenantId = await resolveDefaultTenantId();
+          const tenantId =
+            (await resolveTenantIdByPhoneNumberId(phoneNumberId)) ||
+            (await resolveDefaultTenantId());
           const supabase = getSupabaseAdmin();
 
           const { error: insertError } = await supabase.from('px_messages').insert({
