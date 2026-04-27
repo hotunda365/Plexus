@@ -1,30 +1,34 @@
 {
-  "name": "wa-bridge-server",
+  "name": "plexusai",
   "version": "1.0.0",
-  "description": "WhatsApp Business Cloud API + Personal WhatsApp bridge server with DB persistence",
-  "main": "src/server.js",
+  "description": "",
+  "main": "dist/index.js",
   "scripts": {
-    "dev": "node --watch src/server.js",
-    "start": "npm run db:push && node src/server.js",
-    "postinstall": "prisma generate",
-    "prisma:generate": "prisma generate",
-    "prisma:migrate": "prisma migrate dev --name init",
-    "db:push": "prisma db push --skip-generate"
+    "build": "npm --prefix frontend install --include=dev && npm --prefix frontend run build && tsc",
+    "start": "node -r ts-node/register src/index.ts",
+    "dev": "node -r ts-node/register src/index.ts",
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
   "dependencies": {
-    "@prisma/client": "^6.6.0",
-    "@prisma/fetch-engine": "^6.6.0",
-    "axios": "^1.8.4",
-    "dotenv": "^16.4.5",
-    "express": "^4.21.2",
-    "qrcode": "^1.5.4",
-    "qrcode-terminal": "^0.12.0",
-    "whatsapp-web.js": "^1.26.0"
+    "@google/generative-ai": "^0.24.1",
+    "@supabase/supabase-js": "^2.104.0",
+    "@types/express": "^5.0.3",
+    "@types/node": "^25.6.0",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "dotenv": "^17.4.2",
+    "express": "^5.1.0",
+    "lucide-react": "^0.541.0",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "ts-node": "^10.9.2",
+    "typescript": "^6.0.3"
   },
   "devDependencies": {
-    "prisma": "^6.6.0"
-  },
-  "engines": {
-    "node": ">=20"
+    "supabase": "^2.93.1"
   }
 }

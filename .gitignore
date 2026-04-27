@@ -1,5 +1,4 @@
-node_modules/
+node_modules
 .env
-prisma/dev.db
-prisma/dev.db-journal
-.wwebjs_auth/
+dist
+*.log
