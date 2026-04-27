@@ -438,6 +438,97 @@ app.get("/events", async (req, res) => {
   res.json(events);
 });
 
+// Test Endpoints for WhatsApp Business
+app.post("/test/send-message", async (req, res) => {
+  try {
+    const { to, text, accountId } = req.body || {};
+
+    if (!to || !text) {
+      return res.status(400).json({ error: "to and text are required" });
+    }
+
+    const connector = getCloudConnector(accountId);
+    if (!connector) {
+      return res.status(404).json({ error: "No cloud account configured. Please set up WhatsApp Business credentials first." });
+    }
+
+    if (!connector.isReady()) {
+      return res.status(400).json({ error: "Cloud connector is not ready. Missing credentials." });
+    }
+
+    console.log(`[TEST] Sending test message to ${to}: "${text}"`);
+    const response = await connector.sendMessage({ to, text });
+
+    // Log the test message send event
+    await prisma.eventLog.create({
+      data: {
+        accountId: connector.accountId,
+        platform: "whatsapp_cloud",
+        direction: "outbound",
+        eventType: "test_message",
+        payload: {
+          to,
+          text,
+          response
+        }
+      }
+    });
+
+    return res.json({
+      ok: true,
+      to,
+      text,
+      response,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error("[TEST] Error sending test message:", error.message);
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+app.get("/test/logs", async (req, res) => {
+  try {
+    const limit = Math.min(Number(req.query.limit || 50), 500);
+    const accountId = req.query.accountId ? String(req.query.accountId) : undefined;
+
+    // Get recent messages
+    const messagesWhere = accountId ? { accountId } : undefined;
+    const messages = await prisma.message.findMany({
+      where: messagesWhere,
+      orderBy: { createdAt: "desc" },
+      take: limit
+    });
+
+    // Get recent events
+    const eventsWhere = accountId ? { accountId } : undefined;
+    const events = await prisma.eventLog.findMany({
+      where: eventsWhere,
+      orderBy: { createdAt: "desc" },
+      take: limit
+    });
+
+    // Get account info
+    const accounts = await prisma.accountInfo.findMany();
+    const accountsMap = new Map(accounts.map((acc) => [acc.accountId, acc]));
+
+    return res.json({
+      accountInfo: accountId ? accountsMap.get(accountId) || null : accounts,
+      recentMessages: messages,
+      recentEvents: events,
+      summary: {
+        totalMessages: messages.length,
+        totalEvents: events.length,
+        lastMessageAt: messages[0]?.createdAt || null,
+        lastEventAt: events[0]?.createdAt || null
+      }
+    });
+  } catch (error) {
+    console.error("[TEST] Error fetching logs:", error.message);
+    return res.status(500).json({ error: error.message });
+  }
+});
+
 async function bootstrap() {
   bootstrapConnectorMaps();
 

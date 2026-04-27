@@ -1,0 +1,559 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WhatsApp Business Test Tool</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        min-height: 100vh;
+        padding: 20px;
+      }
+
+      .container {
+        max-width: 1200px;
+        margin: 0 auto;
+      }
+
+      header {
+        text-align: center;
+        color: white;
+        margin-bottom: 30px;
+      }
+
+      header h1 {
+        font-size: 2.5em;
+        margin-bottom: 10px;
+      }
+
+      .content {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 20px;
+      }
+
+      @media (max-width: 768px) {
+        .content {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      .card {
+        background: white;
+        border-radius: 12px;
+        padding: 30px;
+        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+      }
+
+      .card h2 {
+        margin-bottom: 20px;
+        color: #333;
+        font-size: 1.5em;
+        border-bottom: 3px solid #667eea;
+        padding-bottom: 10px;
+      }
+
+      .form-group {
+        margin-bottom: 20px;
+      }
+
+      label {
+        display: block;
+        margin-bottom: 8px;
+        color: #555;
+        font-weight: 600;
+      }
+
+      input,
+      textarea,
+      select {
+        width: 100%;
+        padding: 12px;
+        border: 2px solid #ddd;
+        border-radius: 8px;
+        font-size: 1em;
+        transition: border-color 0.3s;
+      }
+
+      input:focus,
+      textarea:focus,
+      select:focus {
+        outline: none;
+        border-color: #667eea;
+      }
+
+      textarea {
+        resize: vertical;
+        min-height: 80px;
+      }
+
+      button {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        padding: 12px 24px;
+        border: none;
+        border-radius: 8px;
+        font-size: 1em;
+        font-weight: 600;
+        cursor: pointer;
+        transition: transform 0.2s, box-shadow 0.2s;
+      }
+
+      button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
+      }
+
+      button:active {
+        transform: translateY(0);
+      }
+
+      button:disabled {
+        background: #ccc;
+        cursor: not-allowed;
+        transform: none;
+      }
+
+      .status {
+        padding: 15px;
+        border-radius: 8px;
+        margin-top: 20px;
+        font-size: 0.9em;
+      }
+
+      .status.success {
+        background: #d4edda;
+        color: #155724;
+        border-left: 4px solid #28a745;
+      }
+
+      .status.error {
+        background: #f8d7da;
+        color: #721c24;
+        border-left: 4px solid #f5c6cb;
+      }
+
+      .status.info {
+        background: #d1ecf1;
+        color: #0c5460;
+        border-left: 4px solid #bee5eb;
+      }
+
+      .logs-container {
+        max-height: 500px;
+        overflow-y: auto;
+        background: #f8f9fa;
+        border-radius: 8px;
+        padding: 15px;
+      }
+
+      .log-entry {
+        background: white;
+        border-left: 4px solid #667eea;
+        padding: 12px;
+        margin-bottom: 12px;
+        border-radius: 4px;
+        font-size: 0.9em;
+        font-family: 'Courier New', monospace;
+      }
+
+      .log-entry.incoming {
+        border-left-color: #28a745;
+      }
+
+      .log-entry.outgoing {
+        border-left-color: #ffc107;
+      }
+
+      .log-entry.error {
+        border-left-color: #dc3545;
+      }
+
+      .log-entry .timestamp {
+        color: #999;
+        font-size: 0.85em;
+      }
+
+      .log-entry .type {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 4px;
+        font-size: 0.85em;
+        font-weight: 600;
+        margin-right: 8px;
+      }
+
+      .log-entry .type.incoming {
+        background: #d4edda;
+        color: #155724;
+      }
+
+      .log-entry .type.outgoing {
+        background: #fff3cd;
+        color: #856404;
+      }
+
+      .log-entry .type.event {
+        background: #d1ecf1;
+        color: #0c5460;
+      }
+
+      .log-entry .content {
+        margin-top: 8px;
+        word-break: break-word;
+      }
+
+      .full-width {
+        grid-column: 1 / -1;
+      }
+
+      .refresh-btn {
+        margin-top: 20px;
+        width: 100%;
+      }
+
+      .loading {
+        text-align: center;
+        color: #667eea;
+      }
+
+      .spinner {
+        display: inline-block;
+        width: 20px;
+        height: 20px;
+        border: 3px solid #f3f3f3;
+        border-top: 3px solid #667eea;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+      }
+
+      @keyframes spin {
+        0% {
+          transform: rotate(0deg);
+        }
+        100% {
+          transform: rotate(360deg);
+        }
+      }
+
+      .summary {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 10px;
+        margin-bottom: 20px;
+      }
+
+      .summary-item {
+        background: #f8f9fa;
+        padding: 15px;
+        border-radius: 8px;
+        text-align: center;
+      }
+
+      .summary-item .label {
+        color: #666;
+        font-size: 0.9em;
+      }
+
+      .summary-item .value {
+        color: #667eea;
+        font-size: 1.5em;
+        font-weight: 700;
+        margin-top: 5px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <h1>📱 WhatsApp Business Test Tool</h1>
+        <p>Send test messages and view incoming logs</p>
+      </header>
+
+      <div class="content">
+        <!-- Send Test Message Section -->
+        <div class="card">
+          <h2>Send Test Message</h2>
+          <form id="testMessageForm">
+            <div class="form-group">
+              <label for="accountId">Account ID (optional)</label>
+              <input
+                type="text"
+                id="accountId"
+                placeholder="Leave blank for default account"
+              />
+            </div>
+
+            <div class="form-group">
+              <label for="recipientPhone">Recipient Phone Number *</label>
+              <input
+                type="text"
+                id="recipientPhone"
+                placeholder="e.g., 1234567890 or +1234567890"
+                required
+              />
+              <small style="color: #999; margin-top: 5px; display: block;">
+                Include country code without + symbol
+              </small>
+            </div>
+
+            <div class="form-group">
+              <label for="messageText">Message Text *</label>
+              <textarea
+                id="messageText"
+                placeholder="Enter your test message here..."
+                required
+              ></textarea>
+            </div>
+
+            <button type="submit" style="width: 100%;">
+              Send Test Message
+            </button>
+
+            <div id="messageStatus"></div>
+          </form>
+        </div>
+
+        <!-- Logs Section -->
+        <div class="card">
+          <h2>📊 Statistics & Status</h2>
+          <div class="summary" id="summary">
+            <div class="summary-item">
+              <div class="label">Total Messages</div>
+              <div class="value" id="totalMessages">-</div>
+            </div>
+            <div class="summary-item">
+              <div class="label">Total Events</div>
+              <div class="value" id="totalEvents">-</div>
+            </div>
+            <div class="summary-item">
+              <div class="label">Last Message</div>
+              <div class="value" id="lastMessage" style="font-size: 0.9em;">-</div>
+            </div>
+            <div class="summary-item">
+              <div class="label">Last Event</div>
+              <div class="value" id="lastEvent" style="font-size: 0.9em;">-</div>
+            </div>
+          </div>
+
+          <button class="refresh-btn" onclick="refreshLogs()">
+            Refresh Logs
+          </button>
+        </div>
+
+        <!-- Full Width Logs Display -->
+        <div class="card full-width">
+          <h2>📝 Incoming Messages & Events Log</h2>
+          <div id="logsContainer" class="logs-container">
+            <div class="loading">
+              <div class="spinner"></div>
+              <p>Loading logs...</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const API_BASE = location.origin;
+
+      async function sendTestMessage(e) {
+        e.preventDefault();
+        const statusDiv = document.getElementById("messageStatus");
+
+        try {
+          const to = document.getElementById("recipientPhone").value.trim();
+          const text = document.getElementById("messageText").value.trim();
+          const accountId = document.getElementById("accountId").value.trim() || undefined;
+
+          if (!to || !text) {
+            throw new Error("Phone number and message text are required");
+          }
+
+          statusDiv.innerHTML =
+            '<div class="status info"><div class="spinner"></div> Sending message...</div>';
+
+          const response = await fetch(`${API_BASE}/test/send-message`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ to, text, accountId })
+          });
+
+          const data = await response.json();
+
+          if (!response.ok) {
+            throw new Error(data.error || "Failed to send message");
+          }
+
+          statusDiv.innerHTML = `
+            <div class="status success">
+              <strong>✓ Message sent successfully!</strong><br>
+              To: ${data.to}<br>
+              Message ID: ${data.response?.messages?.[0]?.id || "N/A"}<br>
+              Timestamp: ${new Date(data.timestamp).toLocaleString()}
+            </div>
+          `;
+
+          document.getElementById("messageText").value = "";
+          
+          // Refresh logs after sending
+          setTimeout(refreshLogs, 1000);
+        } catch (error) {
+          statusDiv.innerHTML = `
+            <div class="status error">
+              <strong>✗ Error:</strong> ${error.message}
+            </div>
+          `;
+        }
+      }
+
+      async function refreshLogs() {
+        const container = document.getElementById("logsContainer");
+        container.innerHTML =
+          '<div class="loading"><div class="spinner"></div><p>Loading logs...</p></div>';
+
+        try {
+          const response = await fetch(`${API_BASE}/test/logs?limit=50`);
+          const data = await response.json();
+
+          if (!response.ok) {
+            throw new Error(data.error || "Failed to fetch logs");
+          }
+
+          // Update summary
+          document.getElementById("totalMessages").textContent =
+            data.summary.totalMessages;
+          document.getElementById("totalEvents").textContent =
+            data.summary.totalEvents;
+          document.getElementById("lastMessage").textContent = data.summary
+            .lastMessageAt
+            ? new Date(data.summary.lastMessageAt).toLocaleTimeString()
+            : "-";
+          document.getElementById("lastEvent").textContent = data.summary
+            .lastEventAt
+            ? new Date(data.summary.lastEventAt).toLocaleTimeString()
+            : "-";
+
+          // Combine and sort messages and events
+          const allLogs = [];
+
+          // Add messages
+          if (Array.isArray(data.recentMessages)) {
+            data.recentMessages.forEach((msg) => {
+              allLogs.push({
+                type: "message",
+                timestamp: msg.createdAt,
+                data: msg
+              });
+            });
+          }
+
+          // Add events
+          if (Array.isArray(data.recentEvents)) {
+            data.recentEvents.forEach((evt) => {
+              allLogs.push({
+                type: "event",
+                timestamp: evt.createdAt,
+                data: evt
+              });
+            });
+          }
+
+          // Sort by timestamp descending
+          allLogs.sort(
+            (a, b) =>
+              new Date(b.timestamp) - new Date(a.timestamp)
+          );
+
+          if (allLogs.length === 0) {
+            container.innerHTML =
+              '<div class="status info">No logs yet. Send a test message or wait for incoming messages.</div>';
+            return;
+          }
+
+          container.innerHTML = allLogs
+            .map((log) => {
+              const isIncoming = log.type === "message"
+                ? log.data.direction === "inbound"
+                : log.data.direction === "inbound";
+              const isOutgoing = log.type === "message"
+                ? log.data.direction === "outbound"
+                : log.data.direction === "outbound";
+
+              const typeClass = log.type === "message"
+                ? isIncoming
+                  ? "incoming"
+                  : "outgoing"
+                : "event";
+
+              return `
+                <div class="log-entry ${typeClass}">
+                  <div class="timestamp">
+                    ${new Date(log.timestamp).toLocaleString()}
+                  </div>
+                  <div>
+                    <span class="type ${typeClass}">
+                      ${
+                        log.type === "message"
+                          ? isIncoming
+                            ? "📥 INCOMING"
+                            : "📤 OUTGOING"
+                          : "📋 EVENT"
+                      }
+                    </span>
+                    <span style="color: #667eea; font-weight: 600;">
+                      ${log.data.accountId || "unknown"}
+                    </span>
+                  </div>
+                  <div class="content">
+                    ${
+                      log.type === "message"
+                        ? `
+                          <strong>From:</strong> ${log.data.senderName || log.data.sender || "Unknown"}<br>
+                          <strong>To:</strong> ${log.data.receiver || log.data.to || "Unknown"}<br>
+                          <strong>Message:</strong> ${log.data.text || "(No text)"}<br>
+                          <strong>Type:</strong> ${log.data.messageType || "text"}
+                        `
+                        : `
+                          <strong>Event Type:</strong> ${log.data.eventType || "unknown"}<br>
+                          <strong>Platform:</strong> ${log.data.platform || "unknown"}<br>
+                          <strong>Payload:</strong> <pre style="margin: 8px 0; padding: 8px; background: #fff; border-radius: 4px; font-size: 0.85em; overflow-x: auto;">${JSON.stringify(
+                            log.data.payload,
+                            null,
+                            2
+                          )}</pre>
+                        `
+                    }
+                  </div>
+                </div>
+              `;
+            })
+            .join("");
+        } catch (error) {
+          container.innerHTML = `
+            <div class="status error">
+              <strong>Error loading logs:</strong> ${error.message}
+            </div>
+          `;
+        }
+      }
+
+      // Set up event listener
+      document.getElementById("testMessageForm").addEventListener("submit", sendTestMessage);
+
+      // Initial load
+      refreshLogs();
+
+      // Auto-refresh every 10 seconds
+      setInterval(refreshLogs, 10000);
+    </script>
+  </body>
+</html>
