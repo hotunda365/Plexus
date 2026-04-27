@@ -10,6 +10,14 @@ type MonitorApiPayload = {
 
 type ConnStatus = 'online' | 'idle' | 'token_missing' | 'disconnected';
 
+type TokenState = 'valid' | 'invalid' | 'missing' | 'unknown';
+
+type TokenHealth = {
+  state: TokenState;
+  checkedAt: string;
+  detail: string;
+};
+
 type ClientEntry = {
   key: string;
   tenantName: string;
@@ -20,6 +28,7 @@ type ClientEntry = {
   rawStatus: string;
   lastHeartbeat: string | null;
   lastMessageTime: string | null;
+  tokenHealth?: TokenHealth;
 };
 
 function deriveStatus(entry: ClientEntry): ConnStatus {
@@ -42,6 +51,20 @@ function formatRelativeTime(iso: string | null): string {
   if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分鐘前`;
   if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小時前`;
   return `${Math.floor(diff / 86_400_000)} 天前`;
+}
+
+function tokenBadgeClass(state: TokenState): string {
+  if (state === 'valid') return 'bg-emerald-500/15 text-emerald-300 border-emerald-500/20';
+  if (state === 'invalid') return 'bg-rose-500/15 text-rose-300 border-rose-500/20';
+  if (state === 'unknown') return 'bg-slate-500/15 text-slate-300 border-slate-500/20';
+  return 'bg-amber-500/15 text-amber-300 border-amber-500/20';
+}
+
+function tokenLabel(state: TokenState): string {
+  if (state === 'valid') return 'Token 有效';
+  if (state === 'invalid') return 'Token 失效';
+  if (state === 'unknown') return 'Token 未知';
+  return 'Token 缺失';
 }
 
 const STATUS_CONFIG: Record<
@@ -199,6 +222,9 @@ export default function MonitorPage() {
             {entries.map((entry) => {
               const status = deriveStatus(entry);
               const cfg = STATUS_CONFIG[status];
+              const tokenState: TokenState = entry.tokenHealth?.state || (entry.hasToken ? 'unknown' : 'missing');
+              const tokenCheckedAt = entry.tokenHealth?.checkedAt || null;
+              const tokenDetail = entry.tokenHealth?.detail || 'Token status not available';
 
               return (
                 <div
@@ -247,8 +273,12 @@ export default function MonitorPage() {
                   </div>
 
                   {/* Token status */}
-                  <div className={`rounded-xl px-3 py-2 text-xs font-semibold text-center ${entry.hasToken ? 'bg-emerald-500/15 text-emerald-300' : 'bg-rose-500/15 text-rose-300'}`}>
-                    {entry.hasToken ? '✓ Token 已授權' : '✗ Token 未設定'}
+                  <div className={`rounded-xl border px-3 py-2 text-center ${tokenBadgeClass(tokenState)}`}>
+                    <div className="text-xs font-semibold">{tokenLabel(tokenState)}</div>
+                    <div className="mt-1 text-[11px] opacity-80">{tokenDetail}</div>
+                    <div className="mt-1 text-[10px] opacity-70">
+                      檢查: {tokenCheckedAt ? formatRelativeTime(tokenCheckedAt) : '—'}
+                    </div>
                   </div>
                 </div>
               );

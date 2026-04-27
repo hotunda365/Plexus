@@ -110,6 +110,72 @@ app.get('/health', (_req, res) => {
 
 app.get('/api/monitor/connections', async (_req, res) => {
   try {
+    type TokenState = 'valid' | 'invalid' | 'missing';
+    type TokenHealth = {
+      state: TokenState;
+      checkedAt: string;
+      detail: string;
+    };
+
+    const checkTokenUsability = async (
+      phoneNumberId: string,
+      accessToken: string | null,
+    ): Promise<TokenHealth> => {
+      const checkedAt = new Date().toISOString();
+
+      if (!accessToken) {
+        return {
+          state: 'missing',
+          checkedAt,
+          detail: 'No access token configured',
+        };
+      }
+
+      try {
+        const apiVersion = process.env.WHATSAPP_API_VERSION || 'v21.0';
+        const response = await fetch(
+          `https://graph.facebook.com/${apiVersion}/${phoneNumberId}?fields=id,display_phone_number,verified_name`,
+          {
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+            },
+          },
+        );
+
+        if (response.ok) {
+          return {
+            state: 'valid',
+            checkedAt,
+            detail: 'Token check passed',
+          };
+        }
+
+        let detail = `HTTP ${response.status}`;
+        try {
+          const body = await response.json();
+          const errorMessage = String((body as any)?.error?.message || '').trim();
+          if (errorMessage) {
+            detail = `${detail}: ${errorMessage}`;
+          }
+        } catch {
+          // keep default detail when response body is not JSON
+        }
+
+        return {
+          state: 'invalid',
+          checkedAt,
+          detail,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown token check error';
+        return {
+          state: 'invalid',
+          checkedAt,
+          detail: message,
+        };
+      }
+    };
+
     const supabase = getSupabaseAdmin();
 
     const [connResult, tenantResult, msgResult] = await Promise.all([
@@ -160,6 +226,7 @@ app.get('/api/monitor/connections', async (_req, res) => {
       rawStatus: string;
       lastHeartbeat: string | null;
       lastMessageTime: string | null;
+      accessToken: string | null;
     }> = [];
 
     for (const conn of connResult.data || []) {
@@ -182,6 +249,7 @@ app.get('/api/monitor/connections', async (_req, res) => {
         rawStatus: String((conn as any).connection_status || 'disconnected'),
         lastHeartbeat: (conn as any).last_heartbeat ? String((conn as any).last_heartbeat) : null,
         lastMessageTime: lastMsgMap[phoneNumberId] || null,
+        accessToken: (conn as any).access_token ? String((conn as any).access_token) : null,
       });
     }
 
@@ -202,10 +270,34 @@ app.get('/api/monitor/connections', async (_req, res) => {
         rawStatus: (tenant as any).wa_access_token ? 'active' : 'disconnected',
         lastHeartbeat: null,
         lastMessageTime: lastMsgMap[pid] || null,
+        accessToken: (tenant as any).wa_access_token ? String((tenant as any).wa_access_token) : null,
       });
     }
 
-    res.status(200).json({ ok: true, entries, count: entries.length, updatedAt: new Date().toISOString() });
+    const entriesWithTokenHealth = await Promise.all(
+      entries.map(async (entry) => {
+        const tokenHealth = await checkTokenUsability(entry.phoneNumberId, entry.accessToken);
+        return {
+          key: entry.key,
+          tenantName: entry.tenantName,
+          orgCode: entry.orgCode,
+          platform: entry.platform,
+          phoneNumberId: entry.phoneNumberId,
+          hasToken: entry.hasToken,
+          rawStatus: entry.rawStatus,
+          lastHeartbeat: entry.lastHeartbeat,
+          lastMessageTime: entry.lastMessageTime,
+          tokenHealth,
+        };
+      }),
+    );
+
+    res.status(200).json({
+      ok: true,
+      entries: entriesWithTokenHealth,
+      count: entriesWithTokenHealth.length,
+      updatedAt: new Date().toISOString(),
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error';
     res.status(500).json({ ok: false, error: message });
