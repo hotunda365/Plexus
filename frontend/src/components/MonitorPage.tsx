@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Activity, AlertTriangle, Clock3, Wifi, WifiOff } from 'lucide-react';
+import { Activity, Clock3, Wifi, WifiOff } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 
 // ─── Types (shared logic mirrored from ConnectionMonitor) ─────────────────────
