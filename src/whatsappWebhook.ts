@@ -485,6 +485,35 @@ async function resolveConnectionIdByPhoneNumberId(phoneNumberId: string) {
   return String(data.id);
 }
 
+async function upsertConnectionHeartbeat(phoneNumberId: string): Promise<void> {
+  if (!phoneNumberId) return;
+
+  const supabase = getSupabaseAdmin();
+  const now = new Date().toISOString();
+
+  // Try to update px_connections first
+  const { data: connData } = await supabase
+    .from('px_connections')
+    .select('id')
+    .eq('phone_number_id', phoneNumberId)
+    .eq('platform', 'whatsapp')
+    .single();
+
+  if (connData?.id) {
+    await supabase
+      .from('px_connections')
+      .update({ connection_status: 'active', last_heartbeat: now })
+      .eq('id', connData.id);
+    return;
+  }
+
+  // Fallback: update px_tenants if connection record doesn't exist
+  await supabase
+    .from('px_tenants')
+    .update({ status: 'active' })
+    .eq('wa_phone_number_id', phoneNumberId);
+}
+
 async function insertMessageWithFallback(params: {
   tenantId: string | null;
   connectionId: string | null;
@@ -572,6 +601,132 @@ async function insertMessageWithFallback(params: {
 // 這是在 Meta 開發者後台你自己設定的隨機字串
 const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN || 'PlexusAI_2026_Verify';
 
+export async function processWhatsAppWebhookBody(body: any): Promise<{
+  processed: boolean;
+  statusCount: number;
+  messageCount: number;
+}> {
+  // 檢查這是否為 WhatsApp 的訊息事件
+  if (body?.object !== 'whatsapp_business_account') {
+    return {
+      processed: false,
+      statusCount: 0,
+      messageCount: 0,
+    };
+  }
+
+  let statusCount = 0;
+  let messageCount = 0;
+  const entries = Array.isArray(body.entry) ? body.entry : [];
+
+  for (const entryItem of entries) {
+    const changes = Array.isArray((entryItem as any)?.changes) ? (entryItem as any).changes : [];
+
+    for (const changeItem of changes) {
+      const value = (changeItem as any)?.value;
+      const phoneNumberId = String(value?.metadata?.phone_number_id || '');
+      const businessDisplayPhone = String(value?.metadata?.display_phone_number || '');
+      const statuses = Array.isArray(value?.statuses) ? value.statuses : [];
+      const messages = Array.isArray(value?.messages) ? value.messages : [];
+      statusCount += statuses.length;
+      messageCount += messages.length;
+
+      if (statuses.length > 0 || messages.length > 0) {
+        upsertConnectionHeartbeat(phoneNumberId).catch((e) =>
+          console.warn('[Heartbeat] 更新失敗:', e instanceof Error ? e.message : e),
+        );
+      }
+
+      for (const statusItem of statuses) {
+        try {
+          await upsertStatusEvent({
+            body,
+            phoneNumberId,
+            businessDisplayPhone,
+            statusItem: statusItem as Record<string, unknown>,
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'unknown error';
+          console.error(`Webhook 狀態更新失敗: ${message}`);
+        }
+      }
+
+      for (const msgItem of messages) {
+        const msg = msgItem as Record<string, unknown>;
+        const from = String((msg as any)?.from || '');
+        if (!from) {
+          continue;
+        }
+
+        const parsed = parseInboundMessage(msg);
+        const messageId = String(msg?.id || '');
+        const messageType = parsed.messageType;
+        const messageTimestamp = String(msg?.timestamp || '');
+        const customerName = String(value?.contacts?.[0]?.profile?.name || '');
+
+        try {
+          const isDuplicate = await hasMessageId(messageId);
+          if (isDuplicate) {
+            console.log(`ℹ️ 重複訊息已略過: ${messageId}`);
+            continue;
+          }
+
+          const aiDraft = parsed.aiInput
+            ? await getAIResponse(parsed.aiInput)
+            : 'AI 暫無文字可分析（media only）';
+
+          const mediaStorage = await persistWhatsAppMedia({
+            mediaId: parsed.mediaId,
+            mediaMimeType: parsed.mediaMimeType,
+            messageType,
+            messageTimestamp,
+            businessPhoneNumberId: phoneNumberId,
+          });
+          const tenantId =
+            (await resolveTenantIdByPhoneNumberId(phoneNumberId)) ||
+            (await resolveDefaultTenantId());
+          const connectionId = await resolveConnectionIdByPhoneNumberId(phoneNumberId);
+
+          await insertMessageWithFallback({
+            tenantId,
+            connectionId,
+            customerPhone: from,
+            rawMessage: parsed.rawMessage,
+            aiDraft,
+            body,
+            messageId,
+            messageType,
+            messageTimestamp,
+            customerName,
+            businessPhoneNumberId: phoneNumberId,
+            businessDisplayPhone,
+            mediaId: parsed.mediaId,
+            mediaMimeType: parsed.mediaMimeType,
+            mediaSha256: parsed.mediaSha256,
+            mediaCaption: parsed.mediaCaption,
+            mediaFilename: parsed.mediaFilename,
+            mediaStorageBucket: mediaStorage.bucket || '',
+            mediaStoragePath: mediaStorage.path || '',
+            mediaStorageStatus: mediaStorage.status,
+            mediaStorageError: mediaStorage.error || '',
+          });
+
+          console.log('✅ 訊息已存入 Supabase，等待管理員審核');
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'unknown error';
+          console.error(`Webhook 流程失敗: ${message}`);
+        }
+      }
+    }
+  }
+
+  return {
+    processed: true,
+    statusCount,
+    messageCount,
+  };
+}
+
 export const handleWhatsAppWebhook = async (req: Request, res: Response) => {
   // --- 處理 Meta 的驗證請求 (GET) ---
   if (req.method === 'GET') {
@@ -591,102 +746,17 @@ export const handleWhatsAppWebhook = async (req: Request, res: Response) => {
   // --- 處理來自客戶的訊息 (POST) ---
   if (req.method === 'POST') {
     const body = req.body;
-
-    // 檢查這是否為 WhatsApp 的訊息事件
-    if (body.object === 'whatsapp_business_account') {
-      const entries = Array.isArray(body.entry) ? body.entry : [];
-
-      for (const entryItem of entries) {
-        const changes = Array.isArray((entryItem as any)?.changes) ? (entryItem as any).changes : [];
-
-        for (const changeItem of changes) {
-          const value = (changeItem as any)?.value;
-          const phoneNumberId = String(value?.metadata?.phone_number_id || '');
-          const businessDisplayPhone = String(value?.metadata?.display_phone_number || '');
-          const statuses = Array.isArray(value?.statuses) ? value.statuses : [];
-          const messages = Array.isArray(value?.messages) ? value.messages : [];
-
-          for (const statusItem of statuses) {
-            await upsertStatusEvent({
-              body,
-              phoneNumberId,
-              businessDisplayPhone,
-              statusItem: statusItem as Record<string, unknown>,
-            });
-          }
-
-          for (const msgItem of messages) {
-            const msg = msgItem as Record<string, unknown>;
-            const from = String((msg as any)?.from || '');
-            if (!from) {
-              continue;
-            }
-
-            const parsed = parseInboundMessage(msg);
-            const messageId = String(msg?.id || '');
-            const messageType = parsed.messageType;
-            const messageTimestamp = String(msg?.timestamp || '');
-            const customerName = String(value?.contacts?.[0]?.profile?.name || '');
-
-            try {
-              const isDuplicate = await hasMessageId(messageId);
-              if (isDuplicate) {
-                console.log(`ℹ️ 重複訊息已略過: ${messageId}`);
-                continue;
-              }
-
-              const aiDraft = parsed.aiInput
-                ? await getAIResponse(parsed.aiInput)
-                : 'AI 暫無文字可分析（media only）';
-
-              const mediaStorage = await persistWhatsAppMedia({
-                mediaId: parsed.mediaId,
-                mediaMimeType: parsed.mediaMimeType,
-                messageType,
-                messageTimestamp,
-                businessPhoneNumberId: phoneNumberId,
-              });
-              const tenantId =
-                (await resolveTenantIdByPhoneNumberId(phoneNumberId)) ||
-                (await resolveDefaultTenantId());
-              const connectionId = await resolveConnectionIdByPhoneNumberId(phoneNumberId);
-
-              await insertMessageWithFallback({
-                tenantId,
-                connectionId,
-                customerPhone: from,
-                rawMessage: parsed.rawMessage,
-                aiDraft,
-                body,
-                messageId,
-                messageType,
-                messageTimestamp,
-                customerName,
-                businessPhoneNumberId: phoneNumberId,
-                businessDisplayPhone,
-                mediaId: parsed.mediaId,
-                mediaMimeType: parsed.mediaMimeType,
-                mediaSha256: parsed.mediaSha256,
-                mediaCaption: parsed.mediaCaption,
-                mediaFilename: parsed.mediaFilename,
-                mediaStorageBucket: mediaStorage.bucket || '',
-                mediaStoragePath: mediaStorage.path || '',
-                mediaStorageStatus: mediaStorage.status,
-                mediaStorageError: mediaStorage.error || '',
-              });
-
-              console.log('✅ 訊息已存入 Supabase，等待管理員審核');
-            } catch (error) {
-              const message = error instanceof Error ? error.message : 'unknown error';
-              console.error(`Webhook 流程失敗: ${message}`);
-            }
-          }
-        }
+    try {
+      const result = await processWhatsAppWebhookBody(body);
+      if (result.processed) {
+        return res.sendStatus(200);
       }
-
-      return res.sendStatus(200);
+      return res.sendStatus(404);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'unknown error';
+      console.error(`Webhook 請求失敗: ${message}`);
+      return res.status(500).json({ ok: false, error: message });
     }
-    return res.sendStatus(404);
   }
 
   return res.sendStatus(405);
