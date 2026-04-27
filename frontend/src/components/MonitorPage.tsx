@@ -1,31 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Activity, Clock3, Wifi, WifiOff } from 'lucide-react';
-import { supabase } from '../lib/supabase';
 
-// ─── Types (shared logic mirrored from ConnectionMonitor) ─────────────────────
-
-type ConnectionRow = {
-  id: string;
-  tenant_id:
-    | { id: string; name: string; org_code: string | null }
-    | { id: string; name: string; org_code: string | null }[]
-    | null;
-  platform: string;
-  phone_number_id: string;
-  access_token: string | null;
-  connection_status: string | null;
-  last_heartbeat: string | null;
-  created_at: string;
-};
-
-type TenantRow = {
-  id: string;
-  name: string;
-  org_code: string | null;
-  status: string | null;
-  wa_phone_number_id: string | null;
-  wa_access_token: string | null;
-  created_at: string;
+type MonitorApiPayload = {
+  ok: boolean;
+  entries?: ClientEntry[];
+  error?: string;
+  updatedAt?: string;
 };
 
 type ConnStatus = 'online' | 'idle' | 'token_missing' | 'disconnected';
@@ -107,76 +87,26 @@ const STATUS_CONFIG: Record<
 export default function MonitorPage() {
   const [entries, setEntries] = useState<ClientEntry[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState('');
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [, setTick] = useState(0);
 
   const loadData = async () => {
+    setError('');
+
     try {
-      const [connResult, tenantResult, msgResult] = await Promise.all([
-        supabase
-          .from('px_connections')
-          .select(
-            'id, tenant_id(id, name, org_code), platform, phone_number_id, access_token, connection_status, last_heartbeat, created_at',
-          )
-          .eq('platform', 'whatsapp'),
-        supabase
-          .from('px_tenants')
-          .select('id, name, org_code, status, wa_phone_number_id, wa_access_token, created_at')
-          .not('wa_phone_number_id', 'is', null),
-        supabase
-          .from('px_messages')
-          .select('wa_business_phone_number_id, created_at')
-          .not('wa_business_phone_number_id', 'is', null)
-          .order('created_at', { ascending: false })
-          .limit(500),
-      ]);
+      const res = await fetch('/api/monitor/connections', { cache: 'no-store' });
+      const payload = (await res.json()) as MonitorApiPayload;
 
-      const lastMsgMap: Record<string, string> = {};
-      for (const msg of msgResult.data || []) {
-        const pid = msg.wa_business_phone_number_id as string;
-        if (pid && !lastMsgMap[pid]) lastMsgMap[pid] = msg.created_at as string;
+      if (!res.ok || !payload.ok) {
+        throw new Error(payload.error || `HTTP ${res.status}`);
       }
 
-      const seenPhoneIds = new Set<string>();
-      const result: ClientEntry[] = [];
-
-      for (const conn of (connResult.data || []) as ConnectionRow[]) {
-        seenPhoneIds.add(conn.phone_number_id);
-        const tenant = Array.isArray(conn.tenant_id) ? conn.tenant_id[0] : conn.tenant_id;
-        result.push({
-          key: conn.id,
-          tenantName: tenant?.name ?? 'Unknown',
-          orgCode: tenant?.org_code ?? 'N/A',
-          platform: conn.platform,
-          phoneNumberId: conn.phone_number_id,
-          hasToken: !!conn.access_token,
-          rawStatus: conn.connection_status ?? 'disconnected',
-          lastHeartbeat: conn.last_heartbeat,
-          lastMessageTime: lastMsgMap[conn.phone_number_id] ?? null,
-        });
-      }
-
-      for (const tenant of (tenantResult.data || []) as TenantRow[]) {
-        const pid = tenant.wa_phone_number_id!;
-        if (seenPhoneIds.has(pid)) continue;
-        seenPhoneIds.add(pid);
-        result.push({
-          key: tenant.id,
-          tenantName: tenant.name,
-          orgCode: tenant.org_code ?? 'N/A',
-          platform: 'whatsapp',
-          phoneNumberId: pid,
-          hasToken: !!tenant.wa_access_token,
-          rawStatus: tenant.wa_access_token ? 'active' : 'disconnected',
-          lastHeartbeat: null,
-          lastMessageTime: lastMsgMap[pid] ?? null,
-        });
-      }
-
-      setEntries(result);
-      setLastUpdated(new Date());
-    } catch {
-      // silent — monitor page keeps last known state
+      setEntries(Array.isArray(payload.entries) ? payload.entries : []);
+      setLastUpdated(payload.updatedAt ? new Date(payload.updatedAt) : new Date());
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      setError(`監控資料載入失敗: ${message}`);
     } finally {
       setIsLoading(false);
     }
@@ -184,19 +114,15 @@ export default function MonitorPage() {
 
   useEffect(() => {
     loadData();
-
-    const sub = supabase
-      .channel('monitor-page-realtime')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'px_connections' }, loadData)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'px_tenants' }, loadData)
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'px_messages' }, loadData)
-      .subscribe();
-
-    // Re-render every minute for relative timestamps
-    const tickTimer = setInterval(() => setTick((t) => t + 1), 60_000);
+    const pollTimer = setInterval(() => {
+      loadData();
+    }, 20_000);
+    const tickTimer = setInterval(() => {
+      setTick((t) => t + 1);
+    }, 1_000);
 
     return () => {
-      supabase.removeChannel(sub);
+      clearInterval(pollTimer);
       clearInterval(tickTimer);
     };
   }, []);
@@ -253,6 +179,12 @@ export default function MonitorPage() {
 
       {/* ── Connection Cards ── */}
       <main className="flex-1 overflow-auto px-8 py-8">
+        {error && (
+          <div className="mb-4 rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+            {error}
+          </div>
+        )}
+
         {isLoading ? (
           <div className="flex h-full min-h-[300px] items-center justify-center text-slate-400 text-lg">
             載入中...

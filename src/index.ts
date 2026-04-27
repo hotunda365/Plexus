@@ -108,6 +108,110 @@ app.get('/health', (_req, res) => {
   res.status(200).json({ ok: true, service: 'plexusai' });
 });
 
+app.get('/api/monitor/connections', async (_req, res) => {
+  try {
+    const supabase = getSupabaseAdmin();
+
+    const [connResult, tenantResult, msgResult] = await Promise.all([
+      supabase
+        .from('px_connections')
+        .select(
+          'id, tenant_id(id, name, org_code), platform, phone_number_id, access_token, connection_status, last_heartbeat, created_at',
+        )
+        .eq('platform', 'whatsapp'),
+      supabase
+        .from('px_tenants')
+        .select('id, name, org_code, status, wa_phone_number_id, wa_access_token, created_at')
+        .not('wa_phone_number_id', 'is', null),
+      supabase
+        .from('px_messages')
+        .select('wa_business_phone_number_id, created_at')
+        .not('wa_business_phone_number_id', 'is', null)
+        .order('created_at', { ascending: false })
+        .limit(500),
+    ]);
+
+    if (connResult.error) {
+      throw new Error(connResult.error.message);
+    }
+    if (tenantResult.error) {
+      throw new Error(tenantResult.error.message);
+    }
+    if (msgResult.error) {
+      throw new Error(msgResult.error.message);
+    }
+
+    const lastMsgMap: Record<string, string> = {};
+    for (const msg of msgResult.data || []) {
+      const pid = String((msg as any).wa_business_phone_number_id || '');
+      if (pid && !lastMsgMap[pid]) {
+        lastMsgMap[pid] = String((msg as any).created_at || '');
+      }
+    }
+
+    const seenPhoneIds = new Set<string>();
+    const entries: Array<{
+      key: string;
+      tenantName: string;
+      orgCode: string;
+      platform: string;
+      phoneNumberId: string;
+      hasToken: boolean;
+      rawStatus: string;
+      lastHeartbeat: string | null;
+      lastMessageTime: string | null;
+    }> = [];
+
+    for (const conn of connResult.data || []) {
+      const phoneNumberId = String((conn as any).phone_number_id || '');
+      if (!phoneNumberId) {
+        continue;
+      }
+
+      seenPhoneIds.add(phoneNumberId);
+      const tenantRaw = (conn as any).tenant_id;
+      const tenant = Array.isArray(tenantRaw) ? tenantRaw[0] : tenantRaw;
+
+      entries.push({
+        key: String((conn as any).id || phoneNumberId),
+        tenantName: String(tenant?.name || 'Unknown Tenant'),
+        orgCode: String(tenant?.org_code || 'N/A'),
+        platform: String((conn as any).platform || 'whatsapp'),
+        phoneNumberId,
+        hasToken: Boolean((conn as any).access_token),
+        rawStatus: String((conn as any).connection_status || 'disconnected'),
+        lastHeartbeat: (conn as any).last_heartbeat ? String((conn as any).last_heartbeat) : null,
+        lastMessageTime: lastMsgMap[phoneNumberId] || null,
+      });
+    }
+
+    for (const tenant of tenantResult.data || []) {
+      const pid = String((tenant as any).wa_phone_number_id || '');
+      if (!pid || seenPhoneIds.has(pid)) {
+        continue;
+      }
+
+      seenPhoneIds.add(pid);
+      entries.push({
+        key: String((tenant as any).id || pid),
+        tenantName: String((tenant as any).name || 'Unknown Tenant'),
+        orgCode: String((tenant as any).org_code || 'N/A'),
+        platform: 'whatsapp',
+        phoneNumberId: pid,
+        hasToken: Boolean((tenant as any).wa_access_token),
+        rawStatus: (tenant as any).wa_access_token ? 'active' : 'disconnected',
+        lastHeartbeat: null,
+        lastMessageTime: lastMsgMap[pid] || null,
+      });
+    }
+
+    res.status(200).json({ ok: true, entries, count: entries.length, updatedAt: new Date().toISOString() });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    res.status(500).json({ ok: false, error: message });
+  }
+});
+
 // Sync tenants with wa_phone_number_id into px_connections
 app.post('/api/connections/sync', async (_req, res) => {
   try {
